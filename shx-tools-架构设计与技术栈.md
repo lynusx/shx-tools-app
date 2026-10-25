@@ -1,8 +1,10 @@
 # shx-tools 架构设计与技术栈
 
-> 版本：v0.4 ｜ 日期：2026-10-25
+> 版本：v0.5 ｜ 日期：2026-10-25
 > 上游文档：《shx-tools 需求与方案设计（总览）》
 > 关联文档：《shx-tools F1 图片收集设计》
+>
+> **v0.5**：进度字段定口径——`done` 是「已处理」（成功 + 跳过 + 失败），`metrics` 拆成 `copied`/`skipped`/`failed`；速度与剩余时间由界面派生，worker 不算（见 8 章约束表）。
 >
 > **v0.4**：字段与协议对齐——统一 `bytes` / `fileCount` / `sourceScanId` / `hourSlots`；明细批次加 `seq` 与终态对账；补 `task:remove`、`app:version`、`EntryRecord`。
 
@@ -362,7 +364,7 @@ params → 渲染模板 → 展开 → [目录₁, 目录₂, …, 目录ₙ]
 | 任务 | 取消后 |
 |---|---|
 | 扫描 | 无任何副作用，已扫目录的状态保留，报告"已扫描 120 / 180" |
-| 复制 | 已复制的文件保留，报告"已完成 3,200 / 4,821"；`move` 模式已删除的源文件不恢复 |
+| 复制 | 已复制的文件保留，报告"已处理 3,200 / 4,821"；`move` 模式已删除的源文件不恢复 |
 
 ## 8. Worker 通信协议
 
@@ -391,6 +393,7 @@ type WorkerToMain =
 |---|---|
 | 一 worker 一任务 | 不复用进程，避免上一个任务的状态污染下一个；scan 与 copy 各自 fork |
 | 进度节流在 worker 侧 | 每 100 ms 或每 200 条合并一次，跨进程消息量大时 UI 会卡 |
+| 进度字段只报事实 | `done`/`total` 是「已处理」与计划总数（`done = copied + skipped + failed`），所以有跳过也能走到 100%；`metrics` 的 `copied`/`skipped`/`failed` 各自独立；速度与剩余时间由渲染层从两次事件求差，worker 不计算——派生量进契约就会出现两个真相 |
 | 明细批量 + 序号 | `dirs` / `files` 各按 200 条一批发送，两个流各自从 `seq=1` 自增；主进程校验连续性，缺号发 `resend` |
 | 批次可重发 | worker 在终态前保留当前任务的全部批次（≤ 20,000 目录 + 9,000 文件，约 8 MB），收到 `resend` 按 `fromSeq` 重发；**不假设"丢一批最多重扫"** |
 | 终态对账 | 主进程落盘后比对 `summary.dirCount` / `summary.fileCount` 与实际行数；不一致 → `E_WORKER_DATA_LOSS`，任务失败而不是静默少文件 |
