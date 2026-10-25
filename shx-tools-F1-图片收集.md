@@ -1,6 +1,6 @@
 # 图片批量收集（F1）设计
 
-> 所属项目：shx-tools ｜ 版本：v0.6 ｜ 日期：2026-10-25  
+> 所属项目：shx-tools ｜ 版本：v0.7 ｜ 日期：2026-10-25  
 > 上游文档：《shx-tools 需求与方案设计（总览）》《shx-tools 架构设计与技术栈》
 
 ---
@@ -1144,9 +1144,13 @@ Windows 原生 SMB 客户端在遇到目标机台关机或断网时，`opendir` 
 
 ### 5.1.1 前缀预检（可选优化，M1）
 
+**适用范围（先钉边界）**：本策略作用于**点「开始」时已经物化的固定 `ScanUnit` 列表**——不重建列表、不删行、不改变顺序、不改变进度分母，只决定「哪些条目还需要发起 I/O」。被判定为不需要扫描的整组，其行仍按原顺序逐行写入 `dirs.jsonl`（状态 `missing` / `unreachable`）；**从前缀「剔除」的是扫描动作，不是目录行**。
+
 **原理**：父目录不存在 ⇒ 其下所有叶子一定不存在。按 `probePattern` 把 ScanUnit 分组（机台 × 日期 × 班次，即模板到 `{shift}` 为止），每组先探测一次；命中缺失就整组批量标记，省掉逐叶的 SMB 往返。
 
 **收益边界**：只对「整片缺失」有效——停机、当天未排产、日期/班次选错。正常有数据的扫描每组只多 1 次探测（50 台约 50 次，占比 < 1%）；**常规扫描的耗时大头仍是每个文件的 `stat`，不是目录探测**，所以不要期待整体翻倍。
+
+**回本线**：设每前缀覆盖 k 个叶子（利珀 12 小时 × 5 缺陷 × 3 等级 = 180；力禧特 / EL 12 × 5 = 60），全表共 G 个前缀。预检成本是 G 次探测，节省是 M × k 次叶子 I/O（M 为整组缺失的前缀数），故 **M > G / k 即回本**。10 台机台、k = 60 时阈值是 0.17——**只要一条线当天整组缺失，10 次探测的成本就被 60 个跳过的目录覆盖掉 6 倍**。
 
 **哪些前缀状态可以传播**：
 
@@ -1169,15 +1173,25 @@ Windows 原生 SMB 客户端在遇到目标机台关机或断网时，`opendir` 
 - 长路径前缀同样走 `\\?\` 规则。
 
 ```ts
-for (const [prefix, units] of groupBy(units, u => u.probePath)) {
+let i = 0;
+while (i < units.length) {                        // units 已按展开顺序物化，同前缀天然连续
+  const prefix = units[i].probePath;
+  let j = i;
+  while (j < units.length && units[j].probePath === prefix) j++;
+
   const pre = await probePrefix(prefix);          // opendir，读 1 条 entry 判空
-  if (pre.kind === 'missing' || pre.kind === 'empty') { emitAll(units, 'missing'); continue; }
-  if (pre.kind === 'unreachable') { emitAll(units, 'unreachable'); continue; }
-  for (const u of units) await scanOne(u);         // denied / error 照常逐叶
+  if (pre.kind === 'missing' || pre.kind === 'empty') {
+    bulkAppend(units.slice(i, j), 'missing');     // 一次落盘 + 一次进度事件
+  } else if (pre.kind === 'unreachable') {
+    bulkAppend(units.slice(i, j), 'unreachable');
+  } else {
+    for (let k = i; k < j; k++) await scanOne(units[k]);  // denied / error 照常逐叶
+  }
+  i = j;
 }
 ```
 
-**验收门槛**：状态分布与未启用时**逐项零差异**；全缺失场景提速 ≥ 50%；有数据场景开销 < 5%；`denied` 不被扩大；取消与断网行为不变。先在真实入口做 A/B，再决定是否默认开启。
+**验收门槛**：状态分布与未启用时**逐项零差异**；全缺失场景提速 ≥ 50%；有数据场景开销 < 5%；`denied` 不被扩大；取消与断网行为不变。先在真实入口做 A/B；通过后固化为「UNC 默认开、本地默认关」，不通过则降级为可手动开启的实验开关。
 
 ### 5.2 复制任务（copy）
 
