@@ -734,6 +734,8 @@ offset = 76 (Header)
 | 268 | 520 | `TargetUnicode`（UTF-16LE 编码的目标路径，**优先读这个**） |
 
 > **安全截断**：读取 `TargetUnicode` 时，必须以第一个 `\0\0` 空字符截断，滤掉尾部残留内存；若为空则读取 `TargetAnsi` 并截断。
+>
+> **对齐**：块起点可能是奇数偏移（东区 2A 的 EnvVar 块从 463 开始），必须从**块内偏移**解码。不要对整份 Buffer 做 UTF-16 解码后再搜索——奇数起点会整体错位，搜出来的可能是相邻块的字符串。
 
 **② `VistaAndAboveIDListDataBlock`（签名 `0xA000000C`）**
 
@@ -1566,6 +1568,7 @@ running：逐文件复制，并发 4~8
 - **路径来源分支**：`LinkInfo.NetName`、`LinkInfo.LocalBasePath+Suffix`、`EnvVar.TargetUnicode`、`EnvVar.TargetAnsi`、`PropertyStore` 五级优先级各一组样本，断言依次回退正确
 - **冲突检测**：`EnvVar` 的 Unicode 与 ANSI 主机不同时断言标 `conflict`；`LinkInfo` 与 `EnvVar` 不同时同样标 `conflict`；`EnvVar` 与 `PropertyStore` 不同时断言**不**标 `conflict`、仍取 EnvVar、且 `propertyStoreMismatch` 有值
 - **块顺序无关**：东区 2A / 2B 的 PropertyStore 排在 EnvVar 之前，断言仍取到 EnvVar 的 `\\10.108.8.230` / `\\10.108.8.229`
+- **奇数偏移对齐**：东区 2A 的 EnvVar 块从 463（奇数）开始，断言从块内偏移解码得到 `\\10.108.8.230`，而不是对整份 Buffer 解码
 - 编码分支：Unicode / ANSI（GBK）各一组样本
 - 模板渲染：利珀、力禧特、EL 各一组，断言完整路径
   - 关键用例：`{hour}` 取字面值（利珀 `08`、力禧特/EL `8`）、日期格式化（`2026-10-23` → `2026.10.23` / `20261023`）、`{machineLower}`（`6B` → `6b`）
