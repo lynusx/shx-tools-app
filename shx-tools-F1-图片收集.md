@@ -1,6 +1,6 @@
 # 图片批量收集（F1）设计
 
-> 所属项目：shx-tools ｜ 版本：v0.5 ｜ 日期：2026-10-25  
+> 所属项目：shx-tools ｜ 版本：v0.6 ｜ 日期：2026-10-25  
 > 上游文档：《shx-tools 需求与方案设计（总览）》《shx-tools 架构设计与技术栈》
 
 ---
@@ -881,6 +881,7 @@ offset = 76 (Header)
   "lipo": {
     "name": "利珀",
     "pattern": "{machineRoot}\\pl-{machineLower}\\Matting\\{date:YYYY.MM.DD}\\{machine}\\{shift}\\{hour}\\Fail\\{grade}\\{defect}",
+    "probePattern": "{machineRoot}\\pl-{machineLower}\\Matting\\{date:YYYY.MM.DD}\\{machine}\\{shift}",
     "gradeValues": ["A", "B", "C"],
     "dateFormat": "YYYY.MM.DD",
     "shifts": {
@@ -891,6 +892,7 @@ offset = 76 (Header)
   "lixite": {
     "name": "力禧特",
     "pattern": "{machineRoot}\\{subDir}\\A-01-B\\{date:YYYYMMDD}\\{shift}\\{hour}\\{defect}",
+    "probePattern": "{machineRoot}\\{subDir}\\A-01-B\\{date:YYYYMMDD}\\{shift}",
     "subDirValues": ["SaveImages", "el"],
     "dateFormat": "YYYYMMDD",
     "shifts": {
@@ -901,6 +903,7 @@ offset = 76 (Header)
   "el": {
     "name": "EL",
     "pattern": "{machineRoot}\\EL\\{date:YYYYMMDD}\\{shift}\\{hour}\\{defect}",
+    "probePattern": "{machineRoot}\\EL\\{date:YYYYMMDD}\\{shift}",
     "dateFormat": "YYYYMMDD",
     "machineNamePatterns": ["^[AB]\\d{2}-[AB]$", "^[AB]-LXJC-\\d{2}$"],
     "shifts": {
@@ -1138,6 +1141,43 @@ Windows 原生 SMB 客户端在遇到目标机台关机或断网时，`opendir` 
 - **探活策略**：在调度某个机台名下的 ScanUnit 队列前，先对该机台主机（UNC 根 IP）发起轻量探活（通过 TCP 445 端口连接探测，超时严格限定为 1.5 秒）；
 - **快速熔断**：若探活超时或连接被拒，判定该机台离线，触发快速熔断——名下的全部 ScanUnit 不再发起任何磁盘或网络调用，直接批量产出为 `DirResult { status: 'unreachable', files: [] }` 并同步推送进度；
 - **重试机制**：仅在该机台被判定为探活通过、但扫描单目录时偶发瞬时断连的场景下，执行单次 500 ms 延迟重试。`missing` / `denied` 绝不重试。
+
+### 5.1.1 前缀预检（可选优化，M1）
+
+**原理**：父目录不存在 ⇒ 其下所有叶子一定不存在。按 `probePattern` 把 ScanUnit 分组（机台 × 日期 × 班次，即模板到 `{shift}` 为止），每组先探测一次；命中缺失就整组批量标记，省掉逐叶的 SMB 往返。
+
+**收益边界**：只对「整片缺失」有效——停机、当天未排产、日期/班次选错。正常有数据的扫描每组只多 1 次探测（50 台约 50 次，占比 < 1%）；**常规扫描的耗时大头仍是每个文件的 `stat`，不是目录探测**，所以不要期待整体翻倍。
+
+**哪些前缀状态可以传播**：
+
+| 前缀状态 | 处理 | 原因 |
+|---|---|---|
+| `missing`（ENOENT） | 整组标 `missing`，不再逐叶 | 父路径无法解析，子路径必然不存在 |
+| 存在但空目录（`opendir` 无 entry） | 整组标 `missing` | 没有子目录，叶子必然不存在；`stat` 判不出来，必须读 entry |
+| `unreachable`（超时/连接失败） | 整组标 `unreachable`，并触发该机台快速熔断 | 与 5.1 的机台级熔断同源 |
+| `denied`（EACCES） | **不传播**，照常逐叶探测 | Windows ACL 可能「父目录拒绝列目录、子目录单独授权遍历」，传播会把可读叶子误标无权限 |
+| `error` / `ENOTDIR` | **不传播**，照常逐叶探测 | 前缀是文件、共享半死等异常，只有逐叶才能定性 |
+
+**实现约束**：
+
+- 前缀由 `probePattern` 渲染，与 `pattern` 同源；**禁止对渲染后的叶子路径做字符串截断**（段边界会错）。
+- 分组保持展开顺序（机台 → 日期 → 班次）；批量结果**一次事件推送**，仍逐行写 `dirs.jsonl`，行数与进度分母不变。
+- **绝不拿实际目录枚举结果生成任务行**：行永远来自预先展开的固定列表，批量标记只省 I/O，否则 `missing` 行会消失、分母变了。
+- 探测沿用 5.1 的重试策略（`unreachable` 重试 1 次 / 500 ms，`missing` / `denied` 不重试）；探测超时可顺带熔断该机台。
+- 结果只在**任务内**复用，不跨任务缓存（产线在持续写目录）。
+- 开关 `config.scan.prefixProbe.enabled`，默认 **UNC 开、本地关**；`probeCalls` / `leafCalls` / `skippedByPrefix` 记入任务 summary 供诊断。
+- 长路径前缀同样走 `\\?\` 规则。
+
+```ts
+for (const [prefix, units] of groupBy(units, u => u.probePath)) {
+  const pre = await probePrefix(prefix);          // opendir，读 1 条 entry 判空
+  if (pre.kind === 'missing' || pre.kind === 'empty') { emitAll(units, 'missing'); continue; }
+  if (pre.kind === 'unreachable') { emitAll(units, 'unreachable'); continue; }
+  for (const u of units) await scanOne(u);         // denied / error 照常逐叶
+}
+```
+
+**验收门槛**：状态分布与未启用时**逐项零差异**；全缺失场景提速 ≥ 50%；有数据场景开销 < 5%；`denied` 不被扩大；取消与断网行为不变。先在真实入口做 A/B，再决定是否默认开启。
 
 ### 5.2 复制任务（copy）
 
@@ -1452,6 +1492,12 @@ Windows 原生 SMB 客户端在遇到目标机台关机或断网时，`opendir` 
 - 缺陷名相近推荐：编辑距离排序取前 3
 - 输出路径构造：分层模式下 `目标\日期\区域\机台\缺陷\小时\等级\文件名`
 - CopyPlan 汇总：`totalFiles` / `totalBytes` 与 `items` 一致；相对 `dest` 在扫描阶段全部就位，复制时只拼目标根
+- **前缀预检（可选优化）**：mock 前缀 `ENOENT`，断言该组叶探测次数为 0、全部 `missing`，且 `dirs` 行数仍等于组合数
+- **前缀为空目录**：`opendir` 返回 0 条 entry，断言整组 `missing`（不能因为 `stat` 成功就逐叶去扫）
+- **前缀不可达**：断言整组 `unreachable` 并触发该机台熔断，后续组不再发起 I/O
+- **前缀无权限**：断言**不**批量标 `denied`，仍逐叶探测；其中一个叶子可读时结果必须保留为 `ok`
+- **前缀存在**：断言逐叶结果与关闭开关时逐项一致，`probeCalls` 等于组数、`skippedByPrefix` 为 0
+- **状态守恒**：批量标记后 `byStatus` 六项之和 = 目录总数；批量行按原展开顺序落盘
 
 **集成测试**
 
