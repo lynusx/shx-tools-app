@@ -1,7 +1,9 @@
 # 图片批量收集（F1）设计
 
-> 所属项目：shx-tools ｜ 版本：v1.0 ｜ 日期：2026-10-25
+> 所属项目：shx-tools ｜ 版本：v1.1 ｜ 日期：2026-10-25
 > 上游文档：《shx-tools 需求与方案设计（总览）》《shx-tools 架构设计与技术栈》
+>
+> **v1.1**：按 `力禧特/` 的 8 个新样本校准 `.lnk` 解析——`EnvVar` 优先、`PropertyStore` 降为诊断，`conflict` 收窄为强来源互斥（见 2.8 与 D-F1-08）。
 >
 > **v1.0 说明**：仅结构重排，规则不变。v0.7 的 §2.4 与 §5.1/5.2 把「扫描 / 复制」讲了两遍，本版合并为第 3、4 章；新增术语表、端到端流程、决策记录。章节编号与 v0.7 不兼容。
 
@@ -123,8 +125,8 @@
 
 ```
 产品目录                区域（一级子目录）      机台（.lnk 文件）
-力禧特\                东区\                 3B.lnk → \\10.108.8.227\...
-  D:\桌面\...\力禧特     西区\                 6D.lnk → \\10.108.230.133\...
+力禧特\                东区\                 1A.lnk → \\10.108.8.232\...
+  D:\桌面\...\力禧特     西区\                 1B.lnk → \\10.108.229.132\...
 利珀\                  东区\                 6B.lnk → \\10.108.9.153\...
   D:\桌面\利珀-在线PL    西区\
 ```
@@ -210,7 +212,7 @@
     {
       "name": "西区",
       "machines": [
-        { "code": "8B", "lnk": "...\\西区\\8B.lnk", "target": "\\\\10.108.230.133", "subDir": "SaveImages", "type": "unc", "status": "ok" }
+        { "code": "1B", "lnk": "...\\西区\\1B.lnk", "target": "\\\\10.108.229.132", "subDir": "SaveImages", "type": "unc", "status": "ok" }
       ],
       "ignored": []
     }
@@ -256,7 +258,8 @@
 | 通用 | 隐藏文件 / 目录 | 名字以 `.` 开头（`.DS_Store`、`Thumbs.db`） | 无条件忽略，**不进 `ignored`** |
 | A | 目录自身的快捷方式 | 文件名含「快捷方式」，或 target 等于所在区域目录 | 跳过，记入 `ignored` |
 | A | 失效快捷方式 | 所有来源（`LinkInfo` / `EnvVar` / `PropertyStore`）都取不到路径 | 保留，`status: "broken"` |
-| A | 目标冲突 | `EnvVar` 与 `PropertyStore` 指向不同主机 | 保留，`status: "conflict"`，待人工点选 |
+| A | 强来源矛盾 | `EnvVar` 的 Unicode ≠ ANSI，或 `LinkInfo` ≠ `EnvVar` | 保留，`status: "conflict"`，待人工点选 |
+| A | 属性存储残留 | `PropertyStore` 与采纳值不同 | 保留机台，报告记一条警告（见 2.8.5） |
 | A | 非 `.lnk` 文件 | 扩展名不是 `.lnk` | 忽略 |
 | B | 快捷方式 | 扩展名 `.lnk`（如指向共享自身的 `gj-dc-el - 快捷方式.lnk`） | 跳过，记入 `ignored` |
 | B | 非机台目录 | 不匹配任何 `machineNamePatterns`（`backup`、`temp`） | 跳过，记入 `ignored` |
@@ -270,7 +273,7 @@
 |---|---|---|
 | `ok` | 目标路径已确定 | 可选 |
 | `broken` | 所有来源都取不到路径 | 置灰 + 原因 |
-| `conflict` | `EnvVar` 与 `PropertyStore` 指向不同主机（见 2.8） | 黄标 + 两个候选路径，点选确认后转为 `ok` |
+| `conflict` | 强来源互斥：`EnvVar` 的 Unicode ≠ ANSI，或 `LinkInfo` ≠ `EnvVar`（见 2.8.5） | 黄标 + 两个候选路径，点选确认后转为 `ok` |
 
 **排序**：机台编码自然排序（`A01-A < A02-A < … < A10-B < A-LXJC-01`）。自然排序下 `A-LXJC-*` 排在数字机台之后（字母段与数字段比较），这正好把它们放到列表末尾，界面分组时更清晰——不必为此写特殊排序。
 
@@ -322,7 +325,7 @@ const subDir = (hasEl && !hasSaveImages) ? 'el' : 'SaveImages';
 **力禧特（LX）**
 
 ```
-\\10.108.230.133\SaveImages\A-01-B\20261023\白班\15\NG_连续性断栅_A-
+\\10.108.8.232\SaveImages\A-01-B\20261023\白班\15\NG_连续性断栅_A-
 └─── 机台ip ───┘ └─子目录─┘ └工位┘ └─日期─┘ └班次┘ └时┘ └──── 缺陷 ────┘
 ```
 
@@ -339,7 +342,7 @@ const subDir = (hasEl && !hasSaveImages) ? 'el' : 'SaveImages';
 
 | 段位 | 利珀 | 力禧特 | EL |
 |---|---|---|---|
-| 机台根 | **各机台 IP 不同**（如 `6B→\\10.108.9.153`） | **各机台 IP 不同**，实测 `8.x` / `230.x`（如 `3B→\\10.108.8.227`） | `\\10.108.164.2\qj-dc-el\DC\{机台}`（各机台不同） |
+| 机台根 | **各机台 IP 不同**（如 `6B→\\10.108.9.153`） | **各机台 IP 不同**，实测 `8.x` / `229.x`（如 `1A→\\10.108.8.232`） | `\\10.108.164.2\qj-dc-el\DC\{机台}`（各机台不同） |
 | 第 2 段 | `pl-{机台小写}` | `SaveImages` 或 `el` | —（机台已在根末尾） |
 | 第 3 段 | `Matting`（固定） | `A-01-B`（固定工位） | `EL`（恒为大写，已确认） |
 | 日期 | `2026.10.23`（点分隔） | `20261023` | `20261023` |
@@ -364,7 +367,7 @@ const subDir = (hasEl && !hasSaveImages) ? 'el' : 'SaveImages';
 | 产品 | `{machineRoot}` 的取值 | 来源 |
 |---|---|---|
 | 利珀 | 逐台不同（如 `6B → \\10.108.9.153`） | 解析各机台 `.lnk` |
-| 力禧特 | 逐台不同（实测 `\\10.108.8.227`、`\\10.108.230.133`） | 解析各机台 `.lnk` |
+| 力禧特 | 逐台不同（实测 `\\10.108.8.232`、`\\10.108.229.132`） | 解析各机台 `.lnk` |
 | EL | 逐台不同（`Z:\DC\B04-A`、`Z:\DC\A05-A`） | 入口 + 目录名拼接 |
 
 展开时逐台渲染，不存在「共享根」：
@@ -597,7 +600,7 @@ EL 的 UNC 路径常被挂载成盘符（`\\10.108.164.2\qj-dc-el` → `Z:`）�
 |---|---|---|
 | `\\10.108.164.2\qj-dc-el\DC` | 含 `el` → **误判为力禧特** | 段是 `qj-dc-el`，不等于 `el` → 不匹配 |
 | `\\10.108.9.153\pl-6b\Matting\...` | 含 `Matting` → 利珀 | 段 `Matting` → 利珀 ✓ |
-| `\\10.108.8.227\SaveImages\A-01-B\...` | 含 `SaveImages` → 力禧特 | 段 `SaveImages` → 力禧特 ✓ |
+| `\\10.108.8.232\SaveImages\A-01-B\...` | 含 `SaveImages` → 力禧特 | 段 `SaveImages` → 力禧特 ✓ |
 
 `qj-dc-el` 不是编出来的例子——它就是 EL 产线的共享名，`qj-dc` 是工段，`el` 是工序。用子串匹配会把整条 EL 产线判成力禧特，然后拿力禧特的模板去拼路径，结果全部 `missing`。
 
@@ -617,23 +620,28 @@ EL 的 UNC 路径常被挂载成盘符（`\\10.108.164.2\qj-dc-el` → `Z:`）�
 | npm 现成库（`windows-shortcuts`、`shell-link` 等） | **不用**——这些库大多只解析 `LinkInfo`。实测我们的目标路径在 `EnvironmentVariableDataBlock`，还要做 `conflict` 检测，现成库覆盖不到，反而要 fork 改，得不偿失 |
 | 手写 Buffer 解析 | **采纳**——结构固定（76 字节头 + 若干 ExtraData 块），核心约 200 行，完全可控，且能精确落到我们需要的 EnvVar / PropertyStore 分支 |
 
-**真实样本与参考基准**：真实测试样本位于本仓库 `lnk/` 目录下（`3B.lnk`、`6D.lnk`、`7C.lnk`、`8A.lnk`）。期望的机台根目标解析结果：
+**真实样本与参考基准**：本仓库 `力禧特/` 目录下有 8 个真实样本——东区、西区各 `1A` / `1B` / `2A` / `2B`；期望的解析结果在同目录的 `lnk.json`：
 
-- `3B`：`\\10.108.8.227`
-- `6D`：`\\10.108.230.133`
-- `7C`：`\\10.108.230.135`
-- `8A`：`\\10.108.8.218`
+```json
+{
+  "东区": { "1A": "\\\\10.108.8.232", "1B": "\\\\10.108.8.231", "2A": "\\\\10.108.8.230", "2B": "\\\\10.108.8.229" },
+  "西区": { "1A": "\\\\10.108.229.131", "1B": "\\\\10.108.229.132", "2A": "\\\\10.108.229.133", "2B": "\\\\10.108.229.134" }
+}
+```
+
+早期 4 个样本（`3B` / `6D` / `7C` / `8A`）已由这 8 个取代，解析结论一致。
 
 **解析器接口**（`infra/lnk/parseLnk.ts`）：
 
 ```ts
 interface ParsedLnk {
-  target: string | null;          // 机台根（按 2.8.5 的优先级解析出的结果）
+  target: string | null;              // 机台根（按 2.8.4 的优先级解析出的结果）
   targetSource: 'linkInfo' | 'envVar' | 'propStore';
-  conflict: boolean;              // EnvVar 与 PropertyStore 主机不一致
-  conflictCandidates: string[];   // 冲突时的候选路径（给 UI 点选）
-  encoding: 'utf16' | 'gbk';      // 实际使用的字符串编码
-  brokenReason?: string;          // 解析失败原因
+  conflict: boolean;                  // 强来源互斥：EnvVar 的 U≠A，或 LinkInfo≠EnvVar
+  conflictCandidates: string[];       // 冲突时的候选路径（给 UI 点选）
+  propertyStoreMismatch?: string;     // PropertyStore 与采纳值不同：仅告警，不阻断
+  encoding: 'utf16' | 'gbk';          // 实际使用的字符串编码
+  brokenReason?: string;              // 解析失败原因
 }
 
 function parseLnk(buf: Buffer): ParsedLnk;
@@ -643,28 +651,33 @@ function parseLnk(buf: Buffer): ParsedLnk;
 
 #### 2.8.1 实测结论
 
-拿到 4 个真实样本并在本机二进制校验，与最初的假设**不一致**。先把实测事实摆出来：
+拿到 8 个真实样本并逐个做二进制校验，与最初的假设**不一致**。先把实测事实摆出来：
 
 | 字段 | 假设值 | 实测值 | 二进制位解析 |
 |---|---|---|---|
 | `LinkFlags` | 含 `HasLinkInfo`（0x2） | `0x00080280` | `0x80` (IsUnicode) + `0x200` (HasExpString) + `0x80000` (EnableTargetMetadata)；**既无 LinkInfo，也无 LinkTargetIDList 与 StringData** |
 | `FileAttributes` | 标 `DIRECTORY`（0x10） | `0` | 未标目录属性（不能据此判断目标是文件还是目录） |
-| 目标路径位置 | `LinkInfo.CommonNetworkRelativeLink.NetName` | `EnvironmentVariableDataBlock.TargetUnicode` | 位于第一个 ExtraData 块（签名 `0xA0000001`）偏移 268 处的 UTF-16LE 字符串 |
+| 目标路径位置 | `LinkInfo.CommonNetworkRelativeLink.NetName` | `EnvironmentVariableDataBlock.TargetUnicode` | 位于该块内偏移 268 处的 UTF-16LE 字符串 |
 | ExtraData 起始偏移 | 需步进跳过 IDList/LinkInfo/StringData | **固定 76 字节**（0x4C） | 因中间各 Flag 均为 0，头部 76 字节之后立即进入 ExtraData 块 |
 
-四个样本的实测目标：
+8 个样本的实测目标（`EnvVar` 的 Unicode 与 ANSI 两段完全一致，合并为一列）：
 
-| 机台 | 文件大小 | EnvironmentVariable 目标 | PropertyStore 里的路径 | ExtraData 块结构 |
+| 样本 | 大小 | `EnvVar` 目标 | `PropertyStore` | ExtraData 块顺序 |
 |---|---|---|---|---|
-| 3B | 1255 字节 | `\\10.108.8.227` | `\\10.108.229.131` | `0xA0000001`(788B) + `0xA000000C`(217B) + `0xA0000009`(170B) |
-| 6D | 1259 字节 | `\\10.108.230.133` | `\\10.108.229.131` | `0xA0000001`(788B) + `0xA000000C`(221B) + `0xA0000009`(170B) |
-| 7C | 1259 字节 | `\\10.108.230.135` | `\\10.108.229.131` | `0xA0000001`(788B) + `0xA000000C`(221B) + `0xA0000009`(170B) |
-| 8A | 1255 字节 | `\\10.108.8.218` | `\\10.108.229.131` | `0xA0000001`(788B) + `0xA000000C`(217B) + `0xA0000009`(170B) |
+| 东区 1A | 1255 | `\\10.108.8.232` | `\\10.108.229.131` | EnvVar(788) → IDList(217) → PropStore(170) |
+| 东区 1B | 1255 | `\\10.108.8.231` | `\\10.108.229.131` | EnvVar(788) → IDList(217) → PropStore(170) |
+| 东区 2A | 1255 | `\\10.108.8.230` | `\\10.108.229.131` | **PropStore(170) → IDList(217) → EnvVar(788)** |
+| 东区 2B | 1255 | `\\10.108.8.229` | `\\10.108.229.131` | **PropStore(170) → IDList(217) → EnvVar(788)** |
+| 西区 1A | 1259 | `\\10.108.229.131` | `\\10.108.229.131` | EnvVar(788) → IDList(221) → PropStore(170) |
+| 西区 1B | 1259 | `\\10.108.229.132` | `\\10.108.229.131` | EnvVar(788) → IDList(221) → PropStore(170) |
+| 西区 2A | 1259 | `\\10.108.229.133` | `\\10.108.229.131` | EnvVar(788) → IDList(221) → PropStore(170) |
+| 西区 2B | 1259 | `\\10.108.229.134` | `\\10.108.229.131` | EnvVar(788) → IDList(221) → PropStore(170) |
 
-**两条必须记住的事实：**
+**三条必须记住的事实：**
 
-1. **目标路径不在 `LinkInfo`，在 `EnvironmentVariableDataBlock`**。这批 lnk 是 Win7+ 风格（`EnableTargetMetadata` 标志），旧的 `LinkInfo` 段根本不生成。
-2. **PropertyStore 里统一指向 `\\10.108.229.131`，与各机台真实 IP 不同**。这很可能是创建这批快捷方式时的模板残留，或指向某个公共服务器——**必须向现场确认**，解析器不能替用户拍板。
+1. **目标路径不在 `LinkInfo`，在 `EnvironmentVariableDataBlock`**。这批 lnk 是 Win7+ 风格（`EnableTargetMetadata` 标志），旧的 `LinkInfo` 段根本不生成。8 个样本的 EnvVar 与 `lnk.json` 期望值**逐一相符**。
+2. **PropertyStore 在 8 个样本里全是同一个 `\\10.108.229.131`**，而其中 7 台的真实 IP 并不是它（只有西区 1A 恰好是）。一个常量不可能同时是 8 台机的目标——**它是创建快捷方式时的模板残留**，只能作诊断信息，不能作为目标来源。
+3. **ExtraData 块的顺序不固定**：东区 2A / 2B 的 PropertyStore 排在 EnvVar 之前。解析必须**按签名遍历**，不能假设「EnvVar 是第一个块」——后者在这两个样本上会直接取错。
 
 #### 2.8.2 文件结构与步进跳转算法
 
@@ -728,7 +741,7 @@ offset = 76 (Header)
 
 **③ `PropertyStoreDataBlock`（签名 `0xA0000009`）**
 
-属性存储，其中 `System.ItemFolderPathDisplay` 等属性含路径。实测四个样本里都出现 `\\10.108.229.131`，与 EnvVar 不同。**只用于交叉核对，不作为首选来源。**
+属性存储，其中 `System.ItemFolderPathDisplay` 等属性含路径。实测 8 个样本全部是同一个 `\\10.108.229.131`，与其中 7 台的真实 IP 不符——**它是创建快捷方式时的模板残留，只作诊断信息，不参与目标选择**；仅在 `EnvVar` 与 `LinkInfo` 都为空时兜底。
 
 #### 2.8.4 解析步骤
 
@@ -737,27 +750,38 @@ offset = 76 (Header)
 | 1 | 读前 76 字节，校验 `HeaderSize == 0x4C` 与 `LinkCLSID` | 标记 `broken` |
 | 2 | 按 2.8.2 规则步进跳过 IDList、LinkInfo 及全部 StringData，精确到达 ExtraData | 越界则 `broken` |
 | 3 | 遍历 ExtraData 块（遇 BlockSize < 4 终止），收集 `EnvironmentVariable`、`PropertyStore` 的路径 | 格式不合法则停止 |
-| 4 | 目标优先级：`LinkInfo.NetName` → `LinkInfo.LocalBasePath+Suffix` → `EnvVar.TargetUnicode` → `EnvVar.TargetAnsi` → `PropertyStore` | 全部空则 `broken` |
-| 5 | **冲突检测**：`EnvVar` 与 `PropertyStore` 指向不同主机时，标记 `conflict`，UI 明确提示，不静默选一个 | 见 2.8.5 |
+| 4 | 目标优先级：`LinkInfo.NetName` → `LinkInfo.LocalBasePath+Suffix` → `EnvVar.TargetUnicode` → `EnvVar.TargetAnsi` → `PropertyStore`（兜底） | 全部空则 `broken` |
+| 5 | **强来源互斥检测**：`EnvVar` 的 Unicode 与 ANSI 都非空且主机不同，或 `LinkInfo` 与 `EnvVar` 主机不同 → `conflict`，UI 点选；`PropertyStore` 与采纳值不同 → 只记 `propertyStoreMismatch`，不阻断 | 见 2.8.5 |
 | 6 | 判定目标类型：UNC / 映射盘 / 本地 | 映射盘与本地加标注 |
 
 **编码处理**：`TargetUnicode` 恒为 UTF-16LE；`TargetAnsi` 按系统 ANSI（中文 GBK，`iconv-lite` 的 `cp936`）解码；`LinkInfo` 的 Unicode 偏移字段存在时优先 UTF-16LE。
 
 > 这一步不能省。若共享路径含中文，按 latin1 解码会得到乱码，后续所有文件操作失败，而错误信息看起来像「路径不存在」，极难排查。
 
-#### 2.8.5 冲突处理（为什么不能自动选）
+#### 2.8.5 来源矛盾的处理（哪些要人看，哪些只记一笔）
 
-`EnvVar` 说目标在 `\\10.108.8.227`，`PropertyStore` 说在 `\\10.108.229.131`。选错的结果不是报错，而是**扫到另一台机器的目录**——文件名、数量都对得上，唯独内容不是这台机的。这种错误事后几乎无法发现。
+来源先按可信度分两类：
 
-因此：
+| 类别 | 来源 | 可信度 | 依据 |
+|---|---|---|---|
+| 强来源 | `LinkInfo`、`EnvVar` | 描述「这个快捷方式指向哪里」 | 8 个样本的 EnvVar 与 `lnk.json` 期望值 100% 相符 |
+| 弱来源 | `PropertyStore` | 描述「创建/编辑时的历史属性」 | 8 个样本全是同一个地址，其中 7 台明显不符 |
 
-- 两个来源都存在且主机不同 → 机台标 `conflict`，UI 显示两个候选路径，**必须人工点选确认**
-- 确认结果写回 `categories.json` 缓存，同一 lnk 不再重复问
-- 只存在一个来源 → 直接用，不打扰
+处理规则：
 
-`conflict` 是继 `broken` 之后的第二种「需要人看」的状态。它不代表 lnk 损坏，只代表 lnk 内部有历史遗留。
+| 情形 | 处理 | UI |
+|---|---|---|
+| `EnvVar` 的 Unicode 与 ANSI 都非空且主机不同 | `conflict` | 两个候选路径，人工点选 |
+| `LinkInfo` 与 `EnvVar` 都非空且主机不同 | `conflict` | 两个候选路径，人工点选 |
+| `EnvVar` 与 `PropertyStore` 不同 | 采纳 `EnvVar`，记 `propertyStoreMismatch` | 报告一行「已忽略属性存储路径 `\\...`」，不打断 |
+| 只有 `PropertyStore` 有值 | 采纳，`targetSource: 'propStore'` | 报告标注「低置信来源」 |
+| 全部为空 | `broken` | 置灰 + 原因 |
 
-> **待现场核实**：`\\10.108.229.131` 的身份尚未确认（四个样本都指向它，疑似创建快捷方式时的模板残留）。确认之前保持保守策略——要求人工点选，不自动取 `EnvVar`。若核实为模板残留，可放宽为「`EnvVar` 优先 + 报告里记一条」，不再打断用户。（2026-10-25 复核：四条样本仍全部指向该地址，暂未核实，继续要求人工点选。）
+**为什么 PropertyStore 不走人工点选**：按这 8 个真实样本，若「跨来源不一致即 conflict」，8 台里有 7 台首次使用都要人点一次，入口扫描从「约 1 秒」变成「逐台弹窗」；而 EnvVar 在这 8 台上全部正确。把弱来源降级为警告，既保留可追溯性，又不阻断主流程。
+
+`conflict` 仍保留：它是继 `broken` 之后的第二种「需要人看」的状态，但触发条件从「跨来源不一致」收窄为「强来源互斥」。确认结果写回 `categories.json`，同一 lnk 不再重复问。
+
+> **核实记录（2026-10-25）**：`\\10.108.229.131` 原以为是模板残留或公共服务器。新样本证明它确实是西区 1A 的真实 IP，同时也是其余 7 台 PropertyStore 的共同值——即「某次创建快捷方式时留下的常量」。原保守策略（一律人工点选）在新样本上不可用，故按上表调整。
 
 #### 2.8.6 缓存
 
@@ -814,8 +838,8 @@ N = |机台| × |时段| × |缺陷| × |等级|        （日期、班次单选
 渲染示例（力禧特，2 个机台 × 1 时段 × 1 缺陷）：
 
 ```
-\\10.108.8.227\SaveImages\A-01-B\20261023\白班\15\NG_连续性断栅_A-
-\\10.108.230.133\el\A-01-B\20261023\白班\15\NG_连续性断栅_A-
+\\10.108.8.232\SaveImages\A-01-B\20261023\白班\15\NG_连续性断栅_A-
+\\10.108.229.132\el\A-01-B\20261023\白班\15\NG_连续性断栅_A-
 ```
 
 注意两条路径的第 2 段不同（`SaveImages` / `el`）——这个值在入口扫描时就已确定并缓存，展开时直接代入，不存在「扫描时再猜」的环节。
@@ -1454,7 +1478,8 @@ running：逐文件复制，并发 4~8
 |---|---|---|---|
 | 入口不存在 / 无权限 | `E_FS_NOT_FOUND` / `E_NET_DENIED` | 中止，不创建任务 | 「入口路径不存在或无权限访问」 |
 | `.lnk` 损坏或所有来源取不到路径 | `E_LNK_BROKEN` | 该机台标 `broken`，其余继续 | 机台置灰 + 「快捷方式损坏或目标丢失」 |
-| `.lnk` 内部路径冲突（`EnvVar` ≠ `PropertyStore`） | `E_LNK_CONFLICT` | 该机台标 `conflict`，其余继续 | 机台黄标 + 两个候选路径，点选确认后转正常 |
+| 强来源互斥（`EnvVar` 的 Unicode ≠ ANSI，或 `LinkInfo` ≠ `EnvVar`） | `E_LNK_CONFLICT` | 该机台标 `conflict`，其余继续 | 机台黄标 + 两个候选路径，点选确认后转正常 |
+| `PropertyStore` 与采纳值不同 | — | 采纳 `EnvVar`，仅记警告 | 报告一行「已忽略属性存储路径」 |
 | 路径编码异常（含 `U+FFFD`） | `E_LNK_BROKEN` | 同上 | 「快捷方式路径编码异常」 |
 | 目标为映射盘 | — | 保留并标注 | 「依赖盘符映射，换机器可能失效」 |
 | 盘符不可用（提权/服务运行） | `E_FS_NOT_FOUND` | 扫描前 `stat` 盘符根，失败即中止入口扫描 | 「盘符 `Z:` 无法访问，请以当前用户身份运行或改用 UNC 路径」（见 2.4） |
@@ -1498,7 +1523,7 @@ running：逐文件复制，并发 4~8
 - **形态 B 不递归**：只取一级子目录，机台目录下再有嵌套目录不会被当作机台
 - 形态 B 下的 `.lnk`（如 `gj-dc-el - 快捷方式.lnk`）一律不解析、不当作机台
 - 形态 B 的机台命名由 `machineNamePatterns` 配置（当前两种：`^[AB]\d{2}-[AB]$` 与 `^[AB]-LXJC-\d{2}$`）。出现 C 区或新格式时改配置
-- 目标路径所有来源（`LinkInfo` / `EnvVar` / `PropertyStore`）都为空时标 `broken`；`EnvVar` 与 `PropertyStore` 主机不一致时标 `conflict` 待人工点选（仅形态 A 有此问题）
+- 目标路径所有来源（`LinkInfo` / `EnvVar` / `PropertyStore`）都为空时标 `broken`；强来源互斥（`EnvVar` 的 Unicode ≠ ANSI，或 `LinkInfo` ≠ `EnvVar`）时标 `conflict` 待人工点选，`PropertyStore` 不一致只记警告（仅形态 A 有此问题）
 
 **字段**
 
@@ -1537,9 +1562,10 @@ running：逐文件复制，并发 4~8
 
 ### 7.2 单元测试
 
-- `.lnk` 解析：字节流 → `target`（用 4 个真实样本固化为 fixture：`3B`/`6D`/`7C`/`8A`）
+- `.lnk` 解析：字节流 → `target`，用 `力禧特/` 的 8 个真实样本固化为 fixture，断言与 `lnk.json` 逐一相符
 - **路径来源分支**：`LinkInfo.NetName`、`LinkInfo.LocalBasePath+Suffix`、`EnvVar.TargetUnicode`、`EnvVar.TargetAnsi`、`PropertyStore` 五级优先级各一组样本，断言依次回退正确
-- **冲突检测**：`EnvVar` 主机 ≠ `PropertyStore` 主机时断言标 `conflict`，不静默选值；两者一致或只有单一来源时断言直接 `ok`
+- **冲突检测**：`EnvVar` 的 Unicode 与 ANSI 主机不同时断言标 `conflict`；`LinkInfo` 与 `EnvVar` 不同时同样标 `conflict`；`EnvVar` 与 `PropertyStore` 不同时断言**不**标 `conflict`、仍取 EnvVar、且 `propertyStoreMismatch` 有值
+- **块顺序无关**：东区 2A / 2B 的 PropertyStore 排在 EnvVar 之前，断言仍取到 EnvVar 的 `\\10.108.8.230` / `\\10.108.8.229`
 - 编码分支：Unicode / ANSI（GBK）各一组样本
 - 模板渲染：利珀、力禧特、EL 各一组，断言完整路径
   - 关键用例：`{hour}` 取字面值（利珀 `08`、力禧特/EL `8`）、日期格式化（`2026-10-23` → `2026.10.23` / `20261023`）、`{machineLower}`（`6B` → `6b`）
@@ -1613,7 +1639,7 @@ running：逐文件复制，并发 4~8
 
 ### 7.5 必须准备的样本
 
-1. ~~2~3 个真实 `.lnk`~~ —— **已收到 4 个**（`3B`/`6D`/`7C`/`8A`），已固化为 fixture，见 2.8
+1. ~~真实 `.lnk`~~ —— **已收到 8 个**（`力禧特/东区`、`力禧特/西区` 各 `1A`/`1B`/`2A`/`2B`），含 `lnk.json` 期望值，已固化为 fixture，见 2.8
 2. ~~**一份真实的时段目录截图**，确认缺陷目录下是否还有子层级~~ —— **已确认（2026-10-25）**：缺陷目录即扫描终点，其下无子层级，扫描不递归
 
 ---
@@ -1631,7 +1657,7 @@ running：逐文件复制，并发 4~8
 | D-F1-05 | 缺陷名手输 + 历史，不枚举目录 | 枚举要为每个机台每个时段多发探测，代价大于收益 | 从目录枚举：扫描未开始就要遍历，违背「展开不读盘」 |
 | D-F1-06 | 缺陷目录即扫描终点，不递归 | 已确认真实结构无子层级；递归会引入无法解释的行数 | 递归收集：行数与文件数都不可预期 |
 | D-F1-07 | `missing` 与 `unreachable` 必须分开 | 一个正常（未排产）、一个故障（断网），处置不同 | 合并为「失败」：用户不知道该不该重跑 |
-| D-F1-08 | `conflict` 必须人工点选，不自动取 `EnvVar` | 选错会安静地扫到另一台机的内容，事后无法发现 | 自动取 EnvVar：省一次点击，换来不可发现的错数据 |
+| D-F1-08 | `PropertyStore` 只作诊断，`EnvVar` 优先；`conflict` 仅限强来源互斥 | 8 个真实样本 EnvVar 全对，`PropertyStore` 是同一常量（其中 7 台不符）；按跨来源不一致判 conflict 会让 7/8 台每次都要人工点选 | 跨来源不一致即 conflict：功能不可用；完全丢弃 `PropertyStore`：失去诊断线索 |
 | D-F1-09 | 全量物化 `ScanUnit`，不做 generator | 上限 20000，约 6 MB；惰性展开带来复杂度却没有收益 | generator：为不存在的几十万组合付复杂度 |
 | D-F1-10 | 前缀预检作为 M1 可选优化，UNC 默认开 | 只对整片缺失有效；1 条线缺失即可回本（见 3.5） | 默认全开：本地盘收益接近零，纯增开销 |
 | D-F1-11 | 结果列表用虚拟滚动，不设 200 行上限 | 9,000 行也要能从头翻到尾；明细已落盘 | 截断 200 行：用户看不到后面的目录，等于丢结果 |
@@ -1645,7 +1671,7 @@ running：逐文件复制，并发 4~8
 
 | # | 事项 | 现状 | 影响 |
 |---|---|---|---|
-| 1 | `\\10.108.229.131` 的真实身份 | 四个样本的 PropertyStore 都指向它，疑似模板残留，未核实 | 决定 `conflict` 是否继续要求人工点选（见 2.8.5） |
+| 1 | ~~`\\10.108.229.131` 的真实身份~~ | **已核实（2026-10-25）**：它是西区 1A 的真实 IP，同时是其余 7 台 PropertyStore 的共同常量 | 规则已按 2.8.5 调整，不再要求人工点选 |
 | 2 | 前缀预检是否从「可选」提为 M1 必做 | 当前文档标为可选、UNC 默认开 | 影响 M1 排期（约 +0.5 天） |
 | 3 | 「班次存在、但部分时段缺失」是否常见 | 未统计 | 决定是否值得做时段级剪枝（前缀预检只到班次） |
 | 4 | C 区或新机台命名格式 | 当前只有 A/B 两区 | 出现时加 `machineNamePatterns` 配置，不改算法 |
