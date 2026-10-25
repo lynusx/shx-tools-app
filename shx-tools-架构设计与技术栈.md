@@ -1,8 +1,10 @@
 # shx-tools 架构设计与技术栈
 
-> 版本：v0.3 ｜ 日期：2026-10-25
+> 版本：v0.4 ｜ 日期：2026-10-25
 > 上游文档：《shx-tools 需求与方案设计（总览）》
 > 关联文档：《shx-tools F1 图片收集设计》
+>
+> **v0.4**：字段与协议对齐——统一 `bytes` / `fileCount` / `sourceScanId` / `hourSlots`；明细批次加 `seq` 与终态对账；补 `task:remove`、`app:version`、`EntryRecord`。
 
 ---
 
@@ -136,17 +138,17 @@
                 形态 B（无 .lnk，一级目录匹配 ^[AB]\d{2}-）：一级 = 机台
                                             → 机台根 = 入口 + 目录名
                                             → 区域由首字母推导（A 东 / B 西）
-                → 返回 { entry, machines } → 写入 categories.json 对应产品分组
+                → 返回 { entry, regions } → 写入 categories.json 对应产品分组
                 （轻操作，不进任务队列，不占任务记录）
 
 ── 扫描任务 ──────────────────────────────────────────────
-① 填扫描参数    UI 勾机台，填日期 / 班次 / 时段 / 不良类型 / 扩展名
+① 填扫描参数    UI 勾机台，填日期 / 班次 / 时段 / 不良类型 / 扩展名 / 内容去重
 ② 点「开始扫描」 UI → task:create({ kind:'scan', params }) → main
 ③ 校验 + 入队   main: zod 校验 → 创建任务(preparing) → fork worker
 ④ 展开 + 扫描   worker: 渲染完整路径 → 笛卡尔积 → 逐个 scanOne
-                → 边扫边经 ctx.appendDir / appendFile 回传
+                → 边扫边经 ctx.appendDir / appendFile 回传（带 seq）
                 → 上报 phase=scanning 的目录进度
-⑤ 终态         worker 返回 ScanResult → main 落盘 tasks/<scanId>.{json,dirs.jsonl,files.jsonl}
+⑤ 终态         worker 返回 ScanResult → main 落盘 tasks/<taskId>.{json,dirs.jsonl,files.jsonl}
                 → 推 task:state(succeeded)
 
 ── 用户看结果（不是任务）─────────────────────────────────
@@ -154,9 +156,9 @@
                 觉得不值当就到此为止，或改参数重扫
 
 ── 复制任务 ──────────────────────────────────────────────
-⑦ 填复制参数    目标目录 / 输出结构 / 同名冲突 / 移动 / 去重
-⑧ 点「开始复制」 UI → task:create({ kind:'copy', params:{ scanId, ... } }) → main
-⑨ 预检         main: 校验 scanId 有效、files.jsonl 还在、目标可写、空间 ≥ 总量 × 1.05
+⑦ 填复制参数    目标目录 / 输出结构 / 同名冲突 / 复制或移动
+⑧ 点「开始复制」 UI → task:create({ kind:'copy', params:{ sourceScanId, ... } }) → main
+⑨ 预检         main: 校验 sourceScanId 有效、files.jsonl 还在、目标可写、空间 ≥ 总量 × 1.05
                 → 建 CopyPlan → preparing 结束转 running
 ⑩ 复制         worker: 按 CopyPlan 建目录 → 逐文件复制
                 → 上报 phase=copying 的文件进度与字节进度
@@ -177,6 +179,7 @@
 ```ts
 // shared/tool-contract.ts
 export type TaskKind = 'scan' | 'copy';
+export type TaskPhase = 'preparing' | 'scanning' | 'copying';
 
 export interface ToolManifest {
   id: string;                    // 'image-collector'
@@ -185,32 +188,37 @@ export interface ToolManifest {
   description: string;
   category: 'file' | 'network' | 'utility';
   kinds: TaskKind[];             // F1 = ['scan', 'copy']；只有一种的工具写一个
-  paramsSchema: Partial<Record<TaskKind, JSONSchema>>;  // 每个 kind 一份入参 schema
+  /** 每个 kind 一份入参 schema；由 zod 生成（zod-to-json-schema），不手写第二份 */
+  paramsSchema: Partial<Record<TaskKind, JSONSchema>>;
   ui?: 'auto' | 'custom';        // custom = 渲染进程内的专用表单（src/pages/tool/custom/）
   icon?: string;                 // 侧栏图标（@ant-design/icons 名称）；缺省用默认图标
 }
 
 export interface ToolContext {
-  report(p: { done: number; total: number; phase: TaskPhase; message?: string; metrics?: Record<string, number|string> }): void;
+  report(p: { done: number; total: number; phase: TaskPhase; message?: string; metrics?: Record<string, number | string> }): void;
   log(level: 'debug' | 'info' | 'warn' | 'error', message: string, meta?: unknown): void;
   signal: AbortSignal;           // 取消信号，执行器必须定期检查
   tempDir: string;
-  /** 仅 scan 任务可用：逐条追加明细，由主进程批量落盘（不回到内存、不走 IPC 单条往返） */
+}
+
+/** 仅 scan 任务可用：逐条追加明细，由主进程批量落盘（不回到内存、不走 IPC 单条往返） */
+export interface ScanContext extends ToolContext {
   appendDir(rec: DirRecord): void;
   appendFile(rec: FileRecord): void;
 }
 
-export interface ToolExecutor<P = unknown> {
+export interface ToolExecutor<S = unknown, C = unknown> {
   /** 扫描：只读，绝不写目标盘。产出可被 copy 任务引用的清单 */
-  scan?(params: P, ctx: ToolContext): Promise<ScanResult>;
-  /** 复制/执行：写盘，必需 scanId 指向一份已完成的扫描 */
-  copy?(params: P, ctx: ToolContext): Promise<ToolResult>;
+  scan?(params: S, ctx: ScanContext): Promise<ScanResult>;
+  /** 复制/执行：写盘，必需 sourceScanId 指向一份已完成的扫描 */
+  copy?(params: C, ctx: ToolContext): Promise<ToolResult>;
 }
 
 export interface DirRecord {
-  path: string;                  // 相对入口的目录路径
+  path: string;                  // 已渲染的绝对路径（落盘、展示、打开目录共用）
+  combo?: Record<string, string>; // 字段取值，按机台/缺陷聚合用；非扫描任务可缺省
   status: 'ok' | 'empty' | 'missing' | 'unreachable' | 'denied' | 'error';
-  files: number;
+  fileCount: number;
   bytes: number;
   elapsedMs: number;
   code?: string;                 // 状态对应的 TaskError.code
@@ -220,15 +228,16 @@ export interface FileRecord {
   src: string;
   dest: string;                  // 扫描阶段就定好的目标相对路径
   bytes: number;
-  hash?: string;                 // 开启内容去重时才计算
+  hash?: string;                 // "sha256:..."；扫描参数 dedupe=true 时才有
 }
 
 export interface ScanResult {
   summary: {
-    dirs: number;
-    files: number;
-    totalBytes: number;
+    dirCount: number;
+    fileCount: number;
+    bytes: number;
     byStatus: Record<DirRecord['status'], number>;
+    diagnostics?: Record<string, number>;   // 如 probeCalls / leafCalls / skippedByPrefix
   };
   /** 明细不在这里——边扫边经 ctx.appendDir/appendFile 落盘 */
 }
@@ -236,9 +245,45 @@ export interface ScanResult {
 export interface ToolResult {
   summary: Record<string, number | string>;
   artifacts?: { label: string; path: string }[];
-  failures?: { target: string; reason: string; code?: string }[];
+  failures?: { src: string; dest?: string; reason: string; code?: string; stage?: 'scan' | 'copy' }[];
 }
 ```
+
+**F1 的入参形状**（`tools/image-collector/params.ts`，框架不感知）：
+
+```ts
+export interface ScanParams {
+  entryPath: string;
+  entryForm: 'shortcut' | 'direct';
+  productType: 'lipo' | 'lixite' | 'el';
+  machines: { code: string; region: string }[];  // 区域随每台机走：EL 同一任务可跨两区
+  date: string;                   // YYYY-MM-DD，渲染时按产品格式化
+  shift: '白班' | '夜班';          // 直接用模板 shifts 的键，不做二次映射
+  hourSlots: string[];            // 目录里的字面值：利珀 08、力禧特/EL 8，不做补零/去零
+  defects: string[];
+  extensions: string[];
+  dedupe: boolean;                // true 时扫描阶段算 SHA-256，决定 files.jsonl 是否有 hash
+}
+
+export interface CopyParams {
+  sourceScanId: string;
+  targetDir: string;
+  layout: 'tree' | 'flat';
+  conflict: 'rename' | 'overwrite' | 'skip';
+  operation: 'copy' | 'move';
+}
+```
+
+**命名约束**（全文一致，不再出现同义字段）：
+
+| 概念 | 统一名 | 禁止再用 |
+|---|---|---|
+| 字节数 | `bytes` | `size` |
+| 文件数 / 目录数 | `fileCount` / `dirCount` | `files` / `dirs`（当计数用时） |
+| 复制的源扫描 | `sourceScanId` | `scanId` |
+| 机台编号 / 机台根 | `code` / `root` | `name` / `target` |
+| 机台来源 | `source: 'lnk' \| 'dir'` | `kind` |
+| 时段字面值 | `hourSlots` | `hours` |
 
 **为什么把 `scan` 和 `copy` 拆成两个任务而不是一个任务的两个阶段**：
 
@@ -304,11 +349,11 @@ params → 渲染模板 → 展开 → [目录₁, 目录₂, …, 目录ₙ]
 
 这条边界决定了两件事：进度条**必然能走到 100%**（分母恒定），以及"失败"在扫描任务里只是一个状态值，不是一次异常。
 
-**复制任务的入口条件**：`ScanParams` 里带 `scanId`，主进程在执行前校验——
+**复制任务的入口条件**：`CopyParams` 里带 `sourceScanId`，主进程在执行前校验——
 
 | 校验 | 失败处理 |
 |---|---|
-| `scanId` 对应的记录存在且 `kind === 'scan'`、`state === 'succeeded'` | `E_PARAM_INVALID`「找不到可用的扫描结果」 |
+| `sourceScanId` 对应的记录存在且 `kind === 'scan'`、`state === 'succeeded'` | `E_PARAM_INVALID`「找不到可用的扫描结果」 |
 | 该扫描的 `files.jsonl` 仍在（未被清理） | `E_FS_NOT_FOUND`「扫描明细已清理，请重新扫描」 |
 | 扫描时的扩展名/结构等与复制参数不冲突（扩展名来自扫描，复制不能改） | `E_PARAM_INVALID` |
 
@@ -323,28 +368,32 @@ params → 渲染模板 → 展开 → [目录₁, 目录₂, …, 目录ₙ]
 
 ```ts
 // shared/worker-protocol.ts —— 主进程与 worker 共用
+// taskId 贯穿所有消息，既是关联键，也是日志里的任务标识
 
 type MainToWorker =
-  | { id: string; type: 'scan'; toolId: string; params: unknown }
-  | { id: string; type: 'copy'; toolId: string; params: unknown; scanId: string }
-  | { id: string; type: 'cancel' }
-  | { id: string; type: 'ping' };
+  | { taskId: string; type: 'scan'; toolId: string; params: ScanParams }
+  | { taskId: string; type: 'copy'; toolId: string; params: CopyParams }
+  | { taskId: string; type: 'cancel' }
+  | { taskId: string; type: 'resend'; stream: 'dirs' | 'files'; fromSeq: number }
+  | { taskId: string; type: 'ping' };
 
 type WorkerToMain =
-  | { id: string; type: 'progress'; done: number; total: number; phase: 'scanning' | 'preparing' | 'copying'; message?: string; current?: string; metrics?: Record<string, number | string | boolean> }
-  | { id: string; type: 'dirs'; rows: DirRecord[] }      // 扫描明细，批量回传
-  | { id: string; type: 'files'; rows: FileRecord[] }    // 文件清单，批量回传
-  | { id: string; type: 'log'; level: string; message: string; ts: number }
-  | { id: string; type: 'result'; data: ScanResult | ToolResult }
-  | { id: string; type: 'error'; code: string; message: string; stack?: string }
-  | { id: string; type: 'pong' };
+  | { taskId: string; type: 'progress'; done: number; total: number; phase: 'scanning' | 'preparing' | 'copying'; message?: string; current?: string; metrics?: Record<string, number | string> }
+  | { taskId: string; type: 'dirs'; seq: number; rows: DirRecord[] }      // 扫描明细，seq 从 1 自增
+  | { taskId: string; type: 'files'; seq: number; rows: FileRecord[] }    // 文件清单，seq 从 1 自增
+  | { taskId: string; type: 'log'; level: string; message: string; ts: number }
+  | { taskId: string; type: 'result'; data: ScanResult | ToolResult }
+  | { taskId: string; type: 'error'; code: string; message: string; stack?: string }
+  | { taskId: string; type: 'pong' };
 ```
 
 | 约束 | 说明 |
 |---|---|
 | 一 worker 一任务 | 不复用进程，避免上一个任务的状态污染下一个；scan 与 copy 各自 fork |
 | 进度节流在 worker 侧 | 每 100 ms 或每 200 条合并一次，跨进程消息量大时 UI 会卡 |
-| 明细批量回传 | `dirs` / `files` 各按 200 条一批发送，主进程收到即追加落盘，不回传确认（丢一批最多重扫，不影响正确性） |
+| 明细批量 + 序号 | `dirs` / `files` 各按 200 条一批发送，两个流各自从 `seq=1` 自增；主进程校验连续性，缺号发 `resend` |
+| 批次可重发 | worker 在终态前保留当前任务的全部批次（≤ 20,000 目录 + 9,000 文件，约 8 MB），收到 `resend` 按 `fromSeq` 重发；**不假设"丢一批最多重扫"** |
+| 终态对账 | 主进程落盘后比对 `summary.dirCount` / `summary.fileCount` 与实际行数；不一致 → `E_WORKER_DATA_LOSS`，任务失败而不是静默少文件 |
 | 心跳 5 秒 | 15 秒无 `pong` 判定假死，kill 并按 `E_WORKER_TIMEOUT` 失败处理 |
 | 只传纯数据 | 结构化克隆不支持函数、类实例、Symbol；日期统一传 ISO 字符串 |
 | 错误不吞 | worker 内所有异常必须转成 `error` 消息回传，否则主进程只能看到退出码 |
@@ -358,40 +407,59 @@ type WorkerToMain =
 | `tool:list` | invoke | — | `ToolManifest[]` |
 | `task:create` | invoke | `{ toolId, kind, params }` | `{ taskId }`（创建即入队执行；`kind` = `scan` \| `copy`） |
 | `task:cancel` | invoke | `{ taskId }` | `{ ok }` |
-| `task:list` | invoke | `{ limit?, offset?, kind? }` | `TaskRecord[]`（`kind` 可选，用于"只看扫描"） |
+| `task:list` | invoke | `{ limit?, offset?, kind? }` | `TaskRecord[]` |
 | `task:get` | invoke | `{ taskId }` | `TaskRecord` |
+| `task:remove` | invoke | `{ taskId }` | `{ ok }`（仅终态、非引用；连同明细删除） |
 | `task:dirs` | invoke | `{ taskId, offset, limit }` | `{ rows, total, truncated }`（读 `.dirs.jsonl`，分页，不整文件载入） |
-| `task:files` | invoke | `{ taskId, offset, limit }` | `{ rows, total }`（读 `.files.jsonl`，复制前预览将复制的文件） |
+| `task:files` | invoke | `{ taskId, offset, limit }` | `{ rows, total, truncated }` |
 | `task:exportFailures` | invoke | `{ taskId }` | `{ path }`（导出 `CSV`；不含目录明细） |
-| `scan:latest` | invoke | `{ toolId }` | `TaskRecord \| null`（最近一次成功扫描，供"用上次扫描再复制一次"） |
+| `task:latestScan` | invoke | `{ toolId }` | `TaskRecord \| null`（最近一次成功扫描，供「用上次扫描再复制一次」） |
 | `entry:scan` | invoke | `{ path }` | `{ entry, regions }`（**由独立 Worker 执行**，规避 UNC 超时卡死主进程） |
 | `entry:list` | invoke | — | `EntryRecord[]` |
-| `entry:refresh` | invoke | `{ entryId }` | `{ entry, regions, diff }`（同由 Worker 执行） |
+| `entry:refresh` | invoke | `{ entryId }` | `{ entry, regions }` |
 | `entry:remove` | invoke | `{ entryId }` | `{ ok }` |
-| `template:save/list/delete` | invoke | 见 zod schema | — |
-| `fs:pickDirectory/pickFiles` | invoke | `{ multi?, filters? }` | `string[]` |
-| `shell:openPath` | invoke | `{ path }` | `{ ok }` |
-| `update:check/download/install` | invoke | — | `{ ok }` |
-| `update:testSource` | invoke | `{ kind: 'unc'\|'https', url }` | `{ ok, latencyMs, detail }` |
+| `template:save` | invoke | `{ toolId, name, params }` | `{ id }` |
+| `template:list` | invoke | `{ toolId }` | `TemplateRecord[]` |
+| `template:remove` | invoke | `{ templateId }` | `{ ok }` |
+| `fs:pickDirectory` | invoke | `{ title? }` | `string \| null`（单选） |
+| `fs:pickFiles` | invoke | `{ multi?, filters? }` | `string[]` |
+| `shell:openPath` | invoke | `{ path }` | `{ ok, message? }` |
+| `update:check` | invoke | — | `{ ok, info?, code?, message? }` |
+| `update:download` | invoke | — | `{ ok, code?, message? }`（进度走 `update:status`） |
+| `update:install` | invoke | — | `{ ok, code?, message? }` |
+| `update:testSource` | invoke | `{ sourceType: 'unc'\|'https', url }` | `{ ok, latencyMs, detail }` |
+| `app:version` | invoke | — | `{ version, commit? }` |
 | `app:diagnostics` | invoke | — | `{ path }` |
 | `task:progress` | event | `{ taskId, phase, done, total, current?, elapsedMs, metrics? }` | — |
 | `task:log` | event | `{ taskId, level, message, ts }` | — |
-| `task:state` | event | `{ taskId, state, error? }` | — |
+| `task:state` | event | `{ taskId, state, error?: TaskError }` | — |
 | `update:status` | event | `{ stage, percent?, version?, mandatory? }` | — |
 
 **preload 暴露的形状**（渲染进程唯一入口）：
 
 ```ts
+interface EntryRecord {
+  id: string;
+  path: string;
+  name: string;
+  productType: 'lipo' | 'lixite' | 'el';
+  entryForm: 'shortcut' | 'direct';
+  updatedAt: string;
+  ttlSeconds: number;
+}
+```
+
+```ts
 window.shx = {
   tool:     { list() },
-  task:     { create(p), cancel(id), list(q), get(id), dirs(q), files(q),
+  task:     { create(p), cancel(id), remove(id), list(q), get(id), dirs(q), files(q),
+              exportFailures(id), latestScan(toolId),
               onProgress(cb), onLog(cb), onState(cb) },
-  scan:     { latest(toolId) },             // 最近一次成功的扫描，供"再复制一次"
   entry:    { scan(path), list(), refresh(id), remove(id) },
-  template: { save(t), list(id), remove(id) },
+  template: { save(t), list(toolId), remove(id) },
   fs:       { pickDirectory(o), pickFiles(o) },
   shell:    { openPath(p) },
-  update:   { check(), download(), install(), testSource(k, url), onStatus(cb) },
+  update:   { check(), download(), install(), testSource(sourceType, url), onStatus(cb) },
   app:      { version(), diagnostics() },
   win:      { onStateChange(cb) },          // 窗口尺寸/最大化变化，供持久化
 };
@@ -430,27 +498,36 @@ window.shx = {
 
 ```json
 {
+  "schemaVersion": 1,
   "id": "20261023-101532-a1b2",
   "toolId": "image-collector",
+  "toolVersion": "0.1.0",
   "kind": "scan",
   "state": "succeeded",
   "params": {
     "entryPath": "D:\\桌面\\利珀-在线PL",
-    "region": "东区",
-    "machines": ["6B", "8B", "10B"],
+    "entryForm": "shortcut",
+    "productType": "lipo",
+    "machines": [
+      { "code": "6B", "region": "东区" },
+      { "code": "8B", "region": "东区" },
+      { "code": "10B", "region": "西区" }
+    ],
     "date": "2026-10-23",
-    "shift": "day",
-    "hours": ["08", "09", "10", "11", "12", "13", "14"],
+    "shift": "白班",
+    "hourSlots": ["08", "09", "10", "11", "12", "13", "14"],
     "defects": ["明暗片", "面划伤"],
-    "extensions": ["jpg", "png", "bmp"]
+    "extensions": ["jpg", "png", "bmp"],
+    "dedupe": false
   },
   "startedAt": "2026-10-23T13:58:04+08:00",
   "finishedAt": "2026-10-23T13:58:46+08:00",
   "summary": {
-    "dirs": 180, "files": 4821, "totalBytes": 8849018880,
+    "dirCount": 180, "fileCount": 4821, "bytes": 8849018880,
     "byStatus": { "ok": 162, "empty": 12, "missing": 5, "unreachable": 1, "denied": 0, "error": 0 }
   },
   "dirsTruncated": false,
+  "filesTruncated": false,
   "artifacts": [{ "label": "入口", "path": "D:\\桌面\\利珀-在线PL" }]
 }
 ```
@@ -459,8 +536,10 @@ window.shx = {
 
 ```json
 {
+  "schemaVersion": 1,
   "id": "20261024-140210-9e7f",
   "toolId": "image-collector",
+  "toolVersion": "0.1.0",
   "kind": "copy",
   "state": "running",
   "sourceScanId": "20261023-101532-a1b2",
@@ -468,18 +547,57 @@ window.shx = {
     "targetDir": "E:\\collected",
     "layout": "tree",
     "conflict": "rename",
-    "operation": "copy",
-    "dedupe": false
+    "operation": "copy"
   },
   "startedAt": "2026-10-24T14:02:10+08:00",
   "finishedAt": null,
-  "summary": { "copied": 3200, "skipped": 12, "failed": 0, "totalBytes": 8849018880 },
+  "summary": {
+    "planned":  { "fileCount": 4821, "bytes": 8849018880 },
+    "copied":   { "fileCount": 3200, "bytes": 5872025600 },
+    "conflict": { "renamed": 0, "overwritten": 0, "skippedExisting": 10 },
+    "skippedDuplicate": 2,
+    "failed":   { "fileCount": 0 }
+  },
   "failures": [],
   "artifacts": [{ "label": "目标目录", "path": "E:\\collected" }]
 }
 ```
 
-**参数是快照，不是引用**。记录里存的是当次实际用的完整参数，不存"指向模板的 id"——模板被改被删都不影响历史记录的可读性。这也是详情页「重新扫描 / 再复制一次」能回填的前提。
+**两类记录的 TypeScript 形状**
+
+```ts
+type TaskState = 'created' | 'preparing' | 'running' | 'succeeded' | 'failed' | 'canceled' | 'interrupted';
+
+interface CopySummary {
+  planned:  { fileCount: number; bytes: number };
+  copied:   { fileCount: number; bytes: number };
+  conflict: { renamed: number; overwritten: number; skippedExisting: number };
+  skippedDuplicate: number;
+  failed:   { fileCount: number };
+}
+
+interface TaskRecord {
+  schemaVersion: number;
+  id: string;
+  toolId: string;
+  toolVersion: string;
+  kind: TaskKind;
+  state: TaskState;
+  params: ScanParams | CopyParams;   // 快照，完整可回放
+  sourceScanId?: string;             // 仅 copy
+  startedAt: string;                 // ISO 8601
+  finishedAt: string | null;
+  summary: ScanResult['summary'] | CopySummary;
+  dirsTruncated?: boolean;
+  filesTruncated?: boolean;
+  failures?: ToolResult['failures'];
+  artifacts?: ToolResult['artifacts'];
+}
+```
+
+**参数是快照，不是引用**。记录里存的是当次实际用的完整参数，不存「指向模板的 id」——模板被改被删都不影响历史记录的可读性。这也是详情页「重新扫描 / 再复制一次」能回填的前提。
+
+`schemaVersion` 从 1 开始；读取时不识别的高版本**只读不写**，避免旧版覆盖新字段。`toolVersion` 记录当次执行器的版本，用于排查「旧版本产生的记录」。`filesTruncated` 与 `dirsTruncated` 同义，分别对应两个明细文件。
 
 | 策略 | 规则 |
 |---|---|
@@ -511,18 +629,18 @@ window.shx = {
 `TaskRecord` 里只有汇总与失败清单，装不下"每个目录扫到了什么"。F1 的六状态明细单独落一个 JSONL 文件，一行一个目录：
 
 ```json
-{"path":"6B\\2026.10.23\\白班\\13\\A\\明暗片","status":"ok","files":28,"bytes":10485760,"elapsedMs":120}
+{"path":"\\\\10.108.9.153\\pl-6b\\Matting\\2026.10.23\\6B\\白班\\13\\A\\明暗片","combo":{"machine":"6B","date":"2026-10-23","shift":"白班","hour":"13","defect":"明暗片","grade":"A"},"status":"ok","fileCount":28,"bytes":10485760,"elapsedMs":120}
 ```
 
 | 项 | 规则 |
 |---|---|
-| 写入时机 | 扫描中每完成一个目录立即追加一行；进程崩溃最多丢最后一行 |
+| 写入时机 | 按 worker 的批次追加；批次带 `seq`，缺号由主进程发 `resend` 补回 |
 | 顺序 | 保持笛卡尔积展开顺序，**不排序**——顺序本身就是排查线索 |
-| 上限 | 单任务 50,000 行（远超 20,000 组合上限）；超出停止写入，任务记录里置 `dirsTruncated: true` |
+| 上限 | 单任务 50,000 行（远超 20,000 组合上限，仅作安全网）；超出停止写入，任务记录里置 `dirsTruncated: true` |
 | 读取 | 详情页按 `offset/limit` 分页读，不把整个文件载入渲染进程 |
 | 清理 | **只保留最近 50 个扫描任务**的明细；运行中的任务不删；被复制任务引用的扫描不删（见上表「引用保护」） |
-| 缺失容忍 | 文件不存在时详情页显示"明细已清理，只能看汇总"，不报错、不重试 |
-| 体积 | 2 万行约 2 MB；50 条命中上限时约占 100 MB |
+| 缺失容忍 | 文件不存在时详情页显示「明细已清理，只能看汇总」，不报错、不重试 |
+| 体积 | 2 万行约 3 MB（绝对路径）；50 条命中上限时约占 150 MB |
 
 > 为什么不塞进 `<taskId>.json`：明细是追加写的高频数据，混进汇总文件会让"每 2 秒原子重写"的成本随扫描行数线性增长。分成两个文件后，汇总写起来仍是常数开销。
 
@@ -538,7 +656,8 @@ window.shx = {
 |---|---|
 | 写入时机 | 扫描中每发现一个可收集文件追加一行（`dest` 是相对落点，扫描阶段定好；复制任务创建时拼上目标根，不再重算） |
 | 数量级 | 单次扫描通常 3,000~9,000 行，约 1~2 MB |
-| `hash` | 仅在开启内容去重时计算；关闭时该字段缺省，复制阶段也不重复算 |
+| 上限 | 单任务 100,000 行（安全网）；超出停止写入，任务记录里置 `filesTruncated: true` |
+| `hash` | 仅在扫描参数 `dedupe=true` 时计算；否则该字段缺省，复制阶段也不重复算 |
 | 用途 | 复制任务载入它建 CopyPlan；`task:files` 分页读给界面预览"将要复制什么" |
 | 清理 | 与 `.dirs.jsonl` 同生命周期 |
 
@@ -591,6 +710,7 @@ export interface TaskError {
 | | `E_LNK_CONFLICT` | 快捷方式目标主机存在歧义，需人工确认 | 否 |
 | **Worker生命周期** | `E_WORKER_CRASH` | 执行进程异常崩溃，可重新发起 | 是 |
 | | `E_WORKER_TIMEOUT` | 执行进程无响应（假死） | 是 |
+| | `E_WORKER_DATA_LOSS` | 明细批次与汇总对账不一致（重发后仍缺行） | 是 |
 
 系统底层异常必须在基础设施层通过 `normalizeSystemError(err)` 转为统一 `TaskError` 后再向上传递。
 

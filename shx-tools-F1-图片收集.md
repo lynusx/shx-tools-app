@@ -1,7 +1,9 @@
 # 图片批量收集（F1）设计
 
-> 所属项目：shx-tools ｜ 版本：v1.4 ｜ 日期：2026-10-25
+> 所属项目：shx-tools ｜ 版本：v1.5 ｜ 日期：2026-10-25
 > 上游文档：《shx-tools 需求与方案设计（总览）》《shx-tools 架构设计与技术栈》
+>
+> **v1.5**：字段契约对齐架构 v0.4——`DirRecord` 用绝对路径与 `fileCount`/`bytes`，去重归扫描，`sourceScanId` 统一；`categories.json` 补 `version`、`regions`、缺陷 `lastUsedAt`。
 >
 > **v1.4**：EL 只经 Windows「网络位置」接入（本质仍是 UNC），明确不使用映射盘；2.4 重写。
 >
@@ -61,7 +63,7 @@
 | N | 组合数 = 扫描目录数 = 扫描进度分母 | 2.9 |
 | k | 单机台组合数 = 时段数 × 缺陷数 × 等级数 | 2.9 |
 | `ScanUnit` | 一条待扫目录：已渲染的 `path` + `combo` | 2.9 |
-| `DirResult` | 一个目录的扫描结果：状态 + 文件列表 + 耗时 | 3.4 |
+| `DirRecord` | 一个目录的扫描结果：状态 + 文件数 + 字节 + 耗时 | 3.4 |
 | `CopyPlan` | 扫描的产品：目录结果 + 文件条目 + 总量 | 3.4 |
 | `dest` | 文件的**相对落点**，不含目标根 | 3.4 |
 | 前缀组 | 同「机台 × 日期 × 班次」的一组 `ScanUnit`，前缀预检的单位 | 3.5 |
@@ -81,7 +83,7 @@
 ③ 展开（纯函数，不读盘）
    N = |机台| × |时段| × |缺陷| × |等级|，N ≤ 20000
    物化 ScanUnit[]{ path(已渲染), combo, probePath }
-   建任务并落盘 tasks/<scanId>.json（created）
+   建任务并落盘 tasks/<taskId>.json（created）
         ↓
 ④ 扫描任务   created → preparing → succeeded
    机台串行 → TCP 445 探活(1.5s) → 前缀预检 → 机台内并发 scanOne
@@ -98,9 +100,9 @@
 
 | 步骤 | 输入 | 输出 / 产物 | 副作用 |
 |---|---|---|---|
-| ① 入口配置 | 产品根目录 | `categories.json` 的 `entryDir` / `machines` | 写缓存 |
+| ① 入口配置 | 产品根目录 | `categories.json` 的 `entryDir` / `regions` | 写缓存 |
 | ② 参数选择 | 机台、日期、班次、时段、缺陷、扩展名 | 任务参数 | 无 |
-| ③ 展开 | 参数 + 产品模板 | N 条 `ScanUnit` | 写 `tasks/<scanId>.json` |
+| ③ 展开 | 参数 + 产品模板 | N 条 `ScanUnit` | 写 `tasks/<taskId>.json` |
 | ④ 扫描 | `ScanUnit[]` | `dirs.jsonl`、`files.jsonl`、汇总 | **只读源**，不写目标 |
 | ⑤ 结果 | 扫描产物 | 结果页 / `CopyPlan` | 无 |
 | ⑥ 复制 | `CopyPlan` + 目标根 + 选项 | 目标盘文件 | 写目标；`move` 删源 |
@@ -110,7 +112,7 @@
 
 | 收益 | 说明 |
 |---|---|
-| 清单成为可复用资产 | 扫一次可以复制多次（换目标目录、换冲突策略、换去重），也可以只看不复制 |
+| 清单成为可复用资产 | 扫一次可以复制多次（换目标目录、换冲突策略），也可以只看不复制；换去重要重扫 |
 | 失败归因不混 | 扫描失败是「机台连不上」，复制失败是「文件被占用」。一条记录里只能靠猜 |
 | 取消语义不打架 | 扫描取消零副作用；复制取消已拷的保留、`move` 模式删掉的不恢复。分开后各说各的 |
 | 耗时能分开看 | 「扫描 40 秒 + 复制 4 分钟」比一条 `4m40s` 有用得多 |
@@ -211,14 +213,14 @@
     {
       "name": "东区",
       "machines": [
-        { "code": "6B", "lnk": "...\\东区\\6B.lnk", "target": "\\\\10.108.9.153", "subDir": null, "type": "unc", "status": "ok" }
+        { "code": "6B", "lnk": "...\\东区\\6B.lnk", "root": "\\\\10.108.9.153", "subDir": null, "source": "lnk", "status": "ok" }
       ],
       "ignored": [{ "file": "东区 - 快捷方式.lnk", "reason": "目录自身的快捷方式" }]
     },
     {
       "name": "西区",
       "machines": [
-        { "code": "1B", "lnk": "...\\西区\\1B.lnk", "target": "\\\\10.108.229.132", "subDir": "SaveImages", "type": "unc", "status": "ok" }
+        { "code": "1B", "lnk": "...\\西区\\1B.lnk", "root": "\\\\10.108.229.132", "subDir": "SaveImages", "source": "lnk", "status": "ok" }
       ],
       "ignored": []
     }
@@ -235,15 +237,15 @@
     {
       "name": "东区",
       "machines": [
-        { "code": "A01-A", "root": "\\\\10.108.164.2\\qj-dc-el\\DC\\A01-A", "type": "unc", "status": "ok" },
-        { "code": "A-LXJC-01", "root": "\\\\10.108.164.2\\qj-dc-el\\DC\\A-LXJC-01", "type": "unc", "status": "ok" }
+        { "code": "A01-A", "root": "\\\\10.108.164.2\\qj-dc-el\\DC\\A01-A", "source": "dir", "status": "ok" },
+        { "code": "A-LXJC-01", "root": "\\\\10.108.164.2\\qj-dc-el\\DC\\A-LXJC-01", "source": "dir", "status": "ok" }
       ],
       "ignored": []
     },
     {
       "name": "西区",
       "machines": [
-        { "code": "B04-A", "root": "\\\\10.108.164.2\\qj-dc-el\\DC\\B04-A", "type": "unc", "status": "ok" }
+        { "code": "B04-A", "root": "\\\\10.108.164.2\\qj-dc-el\\DC\\B04-A", "source": "dir", "status": "ok" }
       ],
       "ignored": [
         { "file": "gj-dc-el - 快捷方式.lnk", "reason": "快捷方式，不作为机台" }
@@ -255,7 +257,7 @@
 
 `.lnk` 记入哪个区域的 `ignored` 无关紧要（它不属于任何区域），实现上可以放到入口级的 `ignored` 里，此处示意。`.DS_Store` 按 2.3 的规则直接消失，不进列表。
 
-形态 B 的 `root` 就是 `{machineRoot}`，扫描阶段直接用，不再二次拼接。`type` 区分 `unc` / `drive`，只用于错误提示措辞（见 2.4）。
+形态 B 的 `root` 就是 `{machineRoot}`，扫描阶段直接用，不再二次拼接。路径类型（UNC / 盘符 / 本地）由 `root` 的前缀判定，不单独存字段（见 2.4）。
 
 **排除规则**
 
@@ -483,13 +485,15 @@ EL 的共享通过 Windows「添加一个网络位置」接入（资源管理器
 | 参数 | 归属 | 类型 | 说明 | 默认 |
 |---|---|---|---|---|
 | 扩展名 | **扫描** | 多选 | 决定「什么算一张图」，扫描时定死 | jpg/png/bmp |
+| 内容去重 | **扫描** | 开关 | 开启时扫描阶段按大小分组算 SHA-256，写进 `files.jsonl` 的 `hash` | 关 |
 | 目标目录 | 复制 | 路径 | 本地或 UNC | 上次使用（全局一份，不按产品分） |
-| 操作类型 | 复制 | 单选 | 复制 / 移动 | 复制 |
-| 内容去重 | 复制 | 开关 | 同内容（SHA-256）只留一份 | 关 |
-| 输出结构 | 复制 | 单选 | 分层（日期/区域/机台/缺陷/时段/等级）/ 平铺 | 分层 |
-| 同名冲突 | 复制 | 单选 | 自动重命名 / 覆盖 / 跳过 | 自动重命名 |
+| 操作类型 | 复制 | 单选 | 复制 / 移动（`copy` / `move`） | 复制 |
+| 输出结构 | 复制 | 单选 | 分层 / 平铺（`tree` / `flat`） | 分层 |
+| 同名冲突 | 复制 | 单选 | 自动重命名 / 覆盖 / 跳过（`rename` / `overwrite` / `skip`） | 自动重命名 |
 
 **扩展名必须归扫描**：它在扫描阶段决定 `files.jsonl` 里有哪些行。如果放到复制阶段，就会出现「清单说 4,821 张、实际只拷 4,700 张」的账目差，而差值无法解释。
+
+**去重也必须归扫描**：`hash` 是扫描产物的一部分。如果去重归复制，扫描就不知道该不该算 hash，复制又要回头遍历文件——违背「复制是纯搬运」这条边界。代价是改「要不要去重」需要重扫，与改扩展名同理，可接受。
 
 ### 2.6 路径模板
 
@@ -883,13 +887,13 @@ interface ScanUnit {
 }
 ```
 
-`path` 与 `combo` 必须同时产出：`path` 用于访问，`combo` 用于「按机台/缺陷汇总」和失败归因。只留路径的话，报告里就得再解析一次路径才能分组。
+`path` 与 `combo` 必须同时产出：`path` 用于访问，`combo` 用于「按机台/缺陷汇总」和失败归因。`combo` 随行落盘，报告分组不用再解析路径。
 
 **不参与展开的参数**
 
 扩展名、内容去重、目标结构这些参数**不影响路径**，因此不进入笛卡尔积，而是在 `scanOne` 内对文件生效。
 
-这样路径组合数与过滤条件解耦：用户改「要不要去重」，不需要重新展开，也不用重新估算总耗时。
+这样路径组合数与过滤条件解耦：用户改「要不要去重」不需要重新展开，但要重新扫描才生效（`hash` 是扫描产物）。
 
 ### 2.10 不良类型历史
 
@@ -977,7 +981,7 @@ created ──▶ preparing ──────────────▶ succee
                 └──▶ failed / canceled
 ```
 
-扫描任务**不进 `running`**：它没有「执行」这一步，扫描本身就是执行。硬塞一个 running 会让状态名骗人，也会让「复制任务才能改目标盘」这条边界在代码里变得含糊。任务创建即写 `tasks/<scanId>.json`（`created` + 参数快照），进程崩掉也能在任务中心看到「已中断」。
+扫描任务**不进 `running`**：它没有「执行」这一步，扫描本身就是执行。硬塞一个 running 会让状态名骗人，也会让「复制任务才能改目标盘」这条边界在代码里变得含糊。任务创建即写 `tasks/<taskId>.json`（`created` + 参数快照），进程崩掉也能在任务中心看到「已中断」。
 
 ### 3.2 执行顺序
 
@@ -1002,7 +1006,7 @@ created ──▶ preparing ──────────────▶ succee
 Windows 原生 SMB 客户端在遇到目标机台关机或断网时，`opendir` / `stat` 会在内核层漫长重试 20~~60 秒才抛出 `ETIMEDOUT`。若某机台断电关机，盲目遍历其名下全部组合（每台 60~180 个）会导致扫描陷入几十分钟的严重卡顿。
 
 - **探活策略**：在调度某个机台名下的 ScanUnit 队列前，先对该机台主机（UNC 根 IP）发起轻量探活（TCP 445 端口连接探测，超时严格限定为 1.5 秒）
-- **快速熔断**：若探活超时或连接被拒，判定该机台离线——名下的全部 ScanUnit 不再发起任何磁盘或网络调用，直接批量产出 `DirResult { status: 'unreachable', files: [] }` 并同步推送进度
+- **快速熔断**：若探活超时或连接被拒，判定该机台离线——名下的全部 ScanUnit 不再发起任何磁盘或网络调用，直接批量产出 `DirRecord { status: 'unreachable', fileCount: 0, bytes: 0, elapsedMs: 0 }` 并同步推送进度
 - **重试机制**：仅在该机台被判定为探活通过、但扫描单目录时偶发瞬时断连的场景下，执行单次 500 ms 延迟重试。`missing` / `denied` 绝不重试
 
 **`scanOne` 只接收已渲染好的路径**，内部不再做任何模板拼接。拼接只发生在展开阶段——两处各拼一次是最典型的「看起来一样、结果不一样」的 bug 来源。
@@ -1014,8 +1018,8 @@ Windows 原生 SMB 客户端在遇到目标机台关机或断网时，`opendir` 
 | 1 | `opendir` 列目录 | UNC 首次 200~800 ms，后续同机会快很多 |
 | 2 | 过滤扩展名（jpg/png/bmp） | 每条 < 1 ms |
 | 3 | 为每个文件计算相对 `dest`（依赖 combo，此处一次性算好） | < 1 ms |
-| 4 | 收集文件条目（路径、大小、mtime） | < 1 ms |
-| 5 | 若开内容去重：按大小分组，对同尺寸文件算 SHA-256 | 同尺寸文件越多越慢，见下 |
+| 4 | 收集文件条目（路径、大小） | < 1 ms |
+| 5 | 若扫描参数 `dedupe=true`：按大小分组，对同尺寸文件算 SHA-256 | 同尺寸文件越多越慢，见下 |
 | 6 | 归类状态、写结果 | < 1 ms |
 
 **步骤 3 与 5 之前被漏掉过**：`dest` 和去重哈希都必须在扫描阶段完成（复制阶段不再遍历目录、不再重算）。尤其步骤 5，若一个目录里有几百张同尺寸图片，逐个 SHA-256 会明显慢于「每条 < 1 ms」——这不是常数开销，实现时要在进度上报里体现，不能当作免费。
@@ -1026,24 +1030,33 @@ Windows 原生 SMB 客户端在遇到目标机台关机或断网时，`opendir` 
 
 | 产物 | 内容 |
 |---|---|
-| `tasks/<scanId>.json` | 汇总：目录数、文件数、总字节、六状态分布、参数快照 |
-| `tasks/<scanId>.dirs.jsonl` | 每目录一行：路径、状态、文件数、字节、耗时 |
-| `tasks/<scanId>.files.jsonl` | 每文件一行：`src`、`dest`、`bytes`、可选 `hash` |
+| `tasks/<taskId>.json` | 汇总：目录数、文件数、总字节、六状态分布、参数快照 |
+| `tasks/<taskId>.dirs.jsonl` | 每目录一行：绝对路径、字段组合、状态、文件数、字节、耗时 |
+| `tasks/<taskId>.files.jsonl` | 每文件一行：`src`、`dest`（相对）、`bytes`、可选 `hash` |
 
 ```ts
-interface DirResult {
-  path: string;
-  combo: Record<string, string>;
+interface DirRecord {
+  path: string;                  // 已渲染的绝对路径
+  combo?: Record<string, string>;// 字段取值，用于按机台/缺陷聚合，不必解析路径
   status: 'ok' | 'empty' | 'missing' | 'unreachable' | 'denied' | 'error';
-  files: { src: string; dest: string; size: number }[];
+  fileCount: number;
+  bytes: number;
   elapsedMs: number;
+  code?: string;                 // 状态对应的 TaskError.code
+}
+
+interface FileRecord {
+  src: string;
+  dest: string;                  // 相对落点，不含目标根
+  bytes: number;
+  hash?: string;                 // "sha256:..."；扫描参数 dedupe=true 时才有
 }
 
 interface CopyPlan {
-  dirs: DirResult[];                 // 供结果页展示
-  items: { src: string; dest: string; size: number }[];
-  totalFiles: number;
-  totalBytes: number;
+  dirs: DirRecord[];             // 供结果页展示
+  items: FileRecord[];
+  fileCount: number;
+  bytes: number;
 }
 ```
 
@@ -1081,7 +1094,7 @@ interface CopyPlan {
 - 探测沿用 3.2 的重试策略（`unreachable` 重试 1 次 / 500 ms，`missing` / `denied` 不重试）；探测超时可顺带熔断该机台。
 - 结果只在**任务内**复用，不跨任务缓存（产线在持续写目录）。
 - **只探到班次一级**：不对 12 个时段再逐层预检——常态下会多出约 7% 的探测开销，收益取决于「部分时段缺失」的频率，已定不做（2026-10-25）。
-- 无开关：UNC 与本地**始终启用**；`probeCalls` / `leafCalls` / `skippedByPrefix` 记入任务 summary 供诊断。
+- 无开关：UNC 与本地**始终启用**；`probeCalls` / `leafCalls` / `skippedByPrefix` 记入 `summary.diagnostics` 供诊断。
 - 长路径前缀同样走 `\\?\` 规则。
 
 ```ts
@@ -1131,7 +1144,7 @@ while (i < units.length) {                        // units 已按展开顺序物
   total: 180;                 // 待扫总目录数
   current: '6B\\2026.10.23\\白班\\14\\A\\明暗片';
   elapsedMs: 80000;
-  metrics: { scannedDirs: 120, totalDirs: 180, matchedFiles: 4821, matchedBytes: 8849018880 }
+  metrics: { dirCountDone: 120, dirCountTotal: 180, fileCount: 4821, bytes: 8849018880 }
 }
 ```
 
@@ -1151,12 +1164,13 @@ while (i < units.length) {                        // units 已按展开顺序物
 
 | 参数 | 说明 |
 |---|---|
-| `scanId` | 必填，指向一次 `succeeded` 的扫描任务 |
+| `sourceScanId` | 必填，指向一次 `succeeded` 的扫描任务 |
 | 目标目录 | 本地或 UNC |
-| 输出结构 | 分层 / 平铺 |
-| 同名冲突 | 自动重命名 / 覆盖 / 跳过 |
-| 操作类型 | 复制 / 移动（移动 = 复制成功后删源） |
-| 内容去重 | 开 / 关 |
+| 输出结构 | 分层 / 平铺（`tree` / `flat`） |
+| 同名冲突 | 自动重命名 / 覆盖 / 跳过（`rename` / `overwrite` / `skip`） |
+| 操作类型 | 复制 / 移动（`copy` / `move`） |
+
+**内容去重不在复制参数里**：它在扫描参数中（见 2.5）。扫描时开就去算 `hash`，复制只消费——复制阶段不遍历、不重算。
 
 **扩展名来自扫描，复制不能改**。扫描阶段已按扩展名筛过文件清单，复制时再改会导致「清单里有、实际不拷」的口径分裂。要改扩展名就重扫。
 
@@ -1166,7 +1180,7 @@ while (i < units.length) {                        // units 已按展开顺序物
 
 | 校验 | 失败文案 |
 |---|---|
-| `scanId` 存在且状态为 `succeeded` | 「找不到可用的扫描结果，请先扫描」 |
+| `sourceScanId` 存在且状态为 `succeeded` | 「找不到可用的扫描结果，请先扫描」 |
 | 该扫描的 `files.jsonl` 还没被清理 | 「这次扫描的明细已清理，请重新扫描」 |
 | 目标可写 + 剩余空间 ≥ 总量 × 1.05 | 「需要 12.4 GB，当前可用 3.1 GB」 |
 
@@ -1179,7 +1193,7 @@ while (i < units.length) {                        // units 已按展开顺序物
 ### 4.2 执行步骤
 
 ```
-preparing：目标根可写 + 剩余空间 ≥ totalBytes × 1.05
+preparing：目标根可写 + 剩余空间 ≥ plan.bytes × 1.05
   ↓
 建目录：按「目标根 + items.dest」的父路径去重，一次性创建所有需要的子目录
   ↓
@@ -1191,7 +1205,7 @@ running：逐文件复制，并发 4~8
 
 | 事项 | 处理方式 |
 |---|---|
-| 空间预检 | **此时总量已知**，直接比对 `totalBytes × 1.05`，不足则拒绝进入复制 |
+| 空间预检 | **此时总量已知**，直接比对 `plan.bytes × 1.05`，不足则拒绝进入复制 |
 | 建目录 | 先按 `目标根 + dest` 的父路径去重建好，再复制。边复制边建会导致大量重复 `mkdir` |
 | 失败分类 | `EBUSY` 重试 2 次；`EACCES` 直接记账；`ENOSPC` 停止并标记未完成；`ENAMETOOLONG` 加前缀重试 |
 | 扫描后文件变化 | 复制时 `ENOENT` 记「扫描后已删除」；大小与扫描时不一致记「文件已变化」但仍复制 |
@@ -1222,17 +1236,17 @@ running：逐文件复制，并发 4~8
 
 ### 4.4 冲突、去重与移动
 
-| 策略 | 行为 | 报告 |
+| 参数值 | 行为 | 计入 |
 |---|---|---|
-| 自动重命名 | 目标已存在时生成不冲突的名字（`_1`、`_2`…），源文件全部保留 | 记「重命名 N 张」 |
-| 覆盖 | 直接覆盖目标同名文件；覆盖前仍走 `.shx-part` + rename | 记「覆盖 N 张」 |
-| 跳过 | 目标已存在则不复制，源文件保留 | 记「跳过 N 张」 |
+| `rename` | 目标已存在时生成不冲突的名字（`_1`、`_2`…），源文件全部保留 | `conflict.renamed` |
+| `overwrite` | 直接覆盖目标同名文件；覆盖前仍走 `.shx-part` + rename | `conflict.overwritten` |
+| `skip` | 目标已存在则不复制，源文件保留 | `conflict.skippedExisting` |
 
-**去重**：按大小分组、只对同尺寸算 SHA-256，这步已在扫描阶段完成（见 3.3），结果并入 `items`。复制时相同 hash 只复制第一份，其余记 `skipped`，报告写明「去重跳过 N 张」。
+**去重**：扫描参数 `dedupe=true` 时，SHA-256 已在扫描阶段算好并写入 `items[].hash`（见 3.3）；复制时相同 hash 只复制第一份，其余记入 `skippedDuplicate`，报告写明「去重跳过 N 张」。
 
 **移动**：只有复制成功且校验通过后才删源；删源失败时目标保留，该文件记失败并注明「已复制但源未删除」。取消或崩溃时，已删除的源不恢复——这是 `move` 的固有代价，确认框必须写明。
 
-冲突策略与去重开关在**创建复制任务时快照**，不在复制过程中响应 UI 变化。否则「复制到一半把覆盖改成跳过」会让报告里的数字无法解释。
+冲突策略与复制/移动在**创建复制任务时快照**，不在复制过程中响应 UI 变化；去重属于扫描参数，复制阶段同样不响应。否则「复制到一半把覆盖改成跳过」会让报告里的数字无法解释。
 
 ### 4.5 进度与取消
 
@@ -1247,7 +1261,7 @@ running：逐文件复制，并发 4~8
   total: 4821;                // 待复制总文件数
   current: '6B_20261023_08_001.jpg';
   elapsedMs: 140000;
-  metrics: { copiedFiles: 2100, totalFiles: 4821, copiedBytes: 1258291200, totalBytes: 2884901888 }
+  metrics: { fileCountDone: 2100, fileCountTotal: 4821, bytesDone: 1258291200, bytesTotal: 8849018880 }
 }
 ```
 
@@ -1338,114 +1352,133 @@ running：逐文件复制，并发 4~8
 
 ```json
 {
+  "version": 1,
   "categories": {
     "lixite": {
       "name": "力禧特",
-      "entryDir": "",                      // 出厂为空，首次由前端选择/输入并写入
-      "defects": [                         // 缺陷目录名原值列表，不做多余字符变换
-        "NG_黑边_C",
-        "NG_边角黑_C",
-        "NG_边角黑_A-"
+      "entryDir": null,                    // 未配置为 null，不是空串
+      "entryForm": "shortcut",
+      "defects": [                         // 对象数组：名字 + 最近使用时间
+        { "name": "NG_黑边_C", "lastUsedAt": "2026-10-20T09:12:00.000Z" },
+        { "name": "NG_边角黑_C", "lastUsedAt": "2026-10-18T15:03:00.000Z" }
       ],
-      "updatedAt": "2026-10-16T19:35:00.000Z", // 机台列表最后一次成功解析/更新的时间戳
-      "ttlSeconds": 604800,                // 机台缓存有效期（秒，默认 7 天 / 604800 秒）
-      "machines": {
-        "东区": [
-          {
-            "name": "LX5",
-            "target": "\\\\10.108.8.225",
-            "subDir": "SaveImages",         // 力禧特专用：SaveImages 或 el（即模板中的 {subDir}）
-            "kind": "lnk",
-            "status": "ok"
-          }
-        ],
-        "西区": [
-          {
-            "name": "LX7",
-            "target": "\\\\10.108.8.222",
-            "subDir": "el",
-            "kind": "lnk",
-            "status": "ok"
-          }
-        ]
-      }
+      "updatedAt": "2026-10-16T19:35:00.000Z",
+      "ttlSeconds": 604800,
+      "regions": [
+        {
+          "name": "东区",
+          "machines": [
+            {
+              "code": "LX5",
+              "root": "\\\\10.108.8.225",
+              "subDir": "SaveImages",      // 力禧特专用：SaveImages 或 el
+              "source": "lnk",
+              "status": "ok"
+            }
+          ],
+          "ignored": []
+        },
+        {
+          "name": "西区",
+          "machines": [
+            {
+              "code": "LX7",
+              "root": "\\\\10.108.8.222",
+              "subDir": "el",
+              "source": "lnk",
+              "status": "ok"
+            }
+          ],
+          "ignored": []
+        }
+      ]
     },
     "lipo": {
       "name": "利珀",
-      "entryDir": "",                      // 出厂为空，首次由前端传入
+      "entryDir": null,
+      "entryForm": "shortcut",
       "defects": [
-        "黑边",
-        "划伤",
-        "脏污",
-        "明暗片"
+        { "name": "黑边", "lastUsedAt": "2026-10-19T08:00:00.000Z" },
+        { "name": "明暗片", "lastUsedAt": "2026-10-21T11:30:00.000Z" }
       ],
       "updatedAt": "2026-10-16T19:35:00.000Z",
       "ttlSeconds": 604800,
-      "machines": {
-        "东区": [
-          {
-            "name": "5B",
-            "target": "\\\\10.108.9.149",
-            "kind": "lnk",
-            "status": "ok"
-          }
-        ],
-        "西区": [
-          {
-            "name": "6C",
-            "target": "\\\\10.108.230.131",
-            "kind": "lnk",
-            "status": "ok"
-          }
-        ]
-      }
+      "regions": [
+        {
+          "name": "东区",
+          "machines": [
+            { "code": "5B", "root": "\\\\10.108.9.149", "source": "lnk", "status": "ok" }
+          ],
+          "ignored": []
+        },
+        {
+          "name": "西区",
+          "machines": [
+            { "code": "6C", "root": "\\\\10.108.230.131", "source": "lnk", "status": "ok" }
+          ],
+          "ignored": []
+        }
+      ]
     },
     "el": {
       "name": "EL 检测",
-      "entryDir": "",                      // 现场示例：\\\\10.108.164.2\\qj-dc-el\\DC
+      "entryDir": null,                    // 现场示例：\\\\10.108.164.2\\qj-dc-el\\DC
+      "entryForm": "direct",
       "defects": [
-        "NG_黑边_C",
-        "NG_脏污_A-"
+        { "name": "NG_黑边_C", "lastUsedAt": "2026-10-20T10:00:00.000Z" },
+        { "name": "NG_脏污_A-", "lastUsedAt": "2026-10-17T21:00:00.000Z" }
       ],
       "updatedAt": "2026-10-16T19:35:00.000Z",
       "ttlSeconds": 604800,
-      "machines": {
-        "东区": [
-          {
-            "name": "A01-A",
-            "target": "\\\\10.108.164.2\\qj-dc-el\\DC\\A01-A",
-            "kind": "dir",
-            "status": "ok"
-          }
-        ],
-        "西区": [
-          {
-            "name": "B01-A",
-            "target": "\\\\10.108.164.2\\qj-dc-el\\DC\\B01-A",
-            "kind": "dir",
-            "status": "ok"
-          }
-        ]
-      }
+      "regions": [
+        {
+          "name": "东区",
+          "machines": [
+            { "code": "A01-A", "root": "\\\\10.108.164.2\\qj-dc-el\\DC\\A01-A", "source": "dir", "status": "ok" }
+          ],
+          "ignored": []
+        },
+        {
+          "name": "西区",
+          "machines": [
+            { "code": "B01-A", "root": "\\\\10.108.164.2\\qj-dc-el\\DC\\B01-A", "source": "dir", "status": "ok" }
+          ],
+          "ignored": []
+        }
+      ]
     }
   }
 }
 ```
 
+**字段约定**
+
+| 字段 | 约定 |
+|---|---|
+| `version` | 结构版本，从 1 开始；不识别的高版本只读不写 |
+| `entryDir` | 未配置为 `null`；与「空字符串」区分 |
+| `entryForm` | `shortcut` / `direct`，与发现结果一致 |
+| `defects` | 对象数组，`lastUsedAt` 支撑 2.10 的倒序与 50 条淘汰 |
+| `regions` | 数组而非 map：保留顺序，且每个区能带 `ignored` |
+| `machines[].code` | 机台编号（原 `name`） |
+| `machines[].root` | 机台根（原 `target`），对应 `{machineRoot}` |
+| `machines[].source` | `lnk` / `dir`（原 `kind`） |
+| `machines[].status` | `ok` / `broken` / `conflict`；`conflict` 时附 `candidates: string[]` |
+
 **按类型收拢的架构收益**
 
-1. **一揽子上下文切换**：切换产品类别即加载对应分类的完整上下文（`entryDir`、机台树 `machines`、不良列表 `defects`）；用户今天收 EL，明天切利珀，原产线的所有勾选与缺陷词完整还原，互不干扰、互不覆盖。
-2. **生命周期精准解耦**：虽在同一个 JSON 中，但各产品的字段职责清晰——`machines` 受 `ttlSeconds` 控制，超期后后台刷新；`defects` 由前端独立编辑并持久化，**换入口或刷新机台绝不清空已配置的缺陷列表**。
+1. **一揽子上下文切换**：切换产品类别即加载对应分类的完整上下文（`entryDir`、区域树 `regions`、不良列表 `defects`）；用户今天收 EL，明天切利珀，原产线的所有勾选与缺陷词完整还原，互不干扰、互不覆盖。
+2. **生命周期精准解耦**：虽在同一个 JSON 中，但各产品的字段职责清晰——`regions` 受 `ttlSeconds` 控制，超期后后台刷新；`defects` 由前端独立编辑并持久化，**换入口或刷新机台绝不清空已配置的缺陷列表**。
 3. **单文件原子写入安全**：避免了多文件异步写入可能导致的事务中断；任务完成写入新缺陷或更新机台状态时，整份配置通过一次原子写完成。
 
 **刷新与失效**
 
 | 场景 | 行为 |
 |---|---|
-| 首次使用某类别 | 该类别 `entryDir` 为空，必须选入口并扫描 |
-| 二次启动 | 直接展示该类别的 `machines` 缓存，打标缓存更新时间 |
+| 首次使用某类别 | 该类别 `entryDir` 为 `null`，必须选入口并扫描 |
+| 二次启动 | 直接展示该类别的 `regions` 缓存，打标缓存更新时间 |
 | 超过 TTL | 列表仍可用，顶部黄条提示过期，可后台静默或手动刷新 |
-| 手动刷新 | 重扫入口机台并更新 `machines` 与 `updatedAt`，保持 `defects` 不动 |
+| 手动刷新 | 重扫入口机台并更新 `regions` 与 `updatedAt`，保持 `defects` 不动 |
 | 更换入口 | 扫描新入口并更新 `entryDir`，不影响其他类别 |
 | 断网 | 读缓存照常展示；任务发起时按网络状态反馈 |
 | 单产线重置 | 用户点击「重置当前产线缓存」，仅清空对应 category 节点，其余产品完好 |
@@ -1538,7 +1571,7 @@ running：逐文件复制，并发 4~8
 
 - 组合数硬上限 20000
 - **缺陷目录即扫描终点，不递归**（已确认）：只统计缺陷目录直接包含的图片，其下若出现子目录不会被收集。现场若真的出现子层级，要先改模板与扫描器，不能靠扫描器「顺手递归」
-- **不做「文件正在写入」检测**（已确认）。产线拍完与工具读取之间通常隔得够久。代价：极端情况下可能复制到半截 JPEG（文件名正常、打不开），且不报错。复制完成后如需校验，只能靠人工抽查或比对 `totalBytes`
+- **不做「文件正在写入」检测**（已确认）。产线拍完与工具读取之间通常隔得够久。代价：极端情况下可能复制到半截 JPEG（文件名正常、打不开），且不报错。复制完成后如需校验，只能靠人工抽查或比对 `plan.bytes`
 - 不管理 UNC 凭据，依赖 Windows 已保存的凭据
 - **EL 只以网络位置（UNC）接入**：不要求用户映射盘符，工具也不把盘符还原成 UNC；盘符只是兼容性输入
 - 路径超过 255 字符时自动加 `\\?\` 前缀
@@ -1558,7 +1591,7 @@ running：逐文件复制，并发 4~8
 - 取消后报告显示已完成数与剩余数，已复制文件保留
 - 组合数超过 20000 时拒绝执行并提示缩小范围
 - 只建扫描任务时，目标盘没有任何写入（用 `fs.readdir` 对比前后为空）
-- 复制任务引用不存在的 `scanId` 时被拒绝，且不产生任何目标目录
+- 复制任务引用不存在的 `sourceScanId` 时被拒绝，且不产生任何目标目录
 - 复制完成后输出结构为 `目标\2026-10-23\东区\6B\明暗片\13\A\xxx.jpg`
 - 选 `\\10.108.164.2\qj-dc-el\DC`：46 个机台目录分列东西区（每区 20 个主力 + 3 个 LXJC），`gj-dc-el - 快捷方式.lnk` 与 `.DS_Store` 不出现在机台列表；可同时勾选两区机台
 - EL 输出结构为 `目标\20261023\西区\B04-A\NG_脏污_B\18\xxx.jpg`，没有等级层
@@ -1578,7 +1611,7 @@ running：逐文件复制，并发 4~8
 - 扩展名过滤：`jpg`/`png`/`bmp` 各放一个，断言三个都被收集；放一个 `.mp4`，断言被排除
 - 缺陷名校验：非法字符、`..`、`\\` 开头、超长、控制字符各一组，断言全部拒绝
 - 历史记录：按产品隔离、失败任务不入库、超过 50 条淘汰最久未用
-- **入口按类别持久化**：写入利珀入口后切到 EL，断言 EL 的 `entryDir` 为空；再切回利珀，断言仍指向原入口
+- **入口按类别持久化**：写入利珀入口后切到 EL，断言 EL 的 `entryDir` 为 `null`；再切回利珀，断言仍指向原入口
 - **TTL 按类别独立**：构造「利珀缓存 8 天前、EL 缓存 1 天前」，断言只有利珀提示过期
 - **两个类别互不覆盖**：依次设置三类入口各 3 次，断言三个分组各自保留 3 条历史
 - **缺陷历史不随入口清空**：清空某类别的 `scans` 后，断言该类别的缺陷历史仍在
@@ -1602,7 +1635,7 @@ running：逐文件复制，并发 4~8
 - 产品识别按段匹配：`\\10.108.164.2\qj-dc-el\DC` 不得被判为力禧特
 - 缺陷名相近推荐：编辑距离排序取前 3
 - 输出路径构造：分层模式下 `目标\日期\区域\机台\缺陷\时段\等级\文件名`
-- CopyPlan 汇总：`totalFiles` / `totalBytes` 与 `items` 一致；相对 `dest` 在扫描阶段全部就位，复制时只拼目标根
+- CopyPlan 汇总：`fileCount` / `bytes` 与 `items` 一致；相对 `dest` 在扫描阶段全部就位，复制时只拼目标根
 - **前缀预检**：mock 前缀 `ENOENT`，断言该组叶探测次数为 0、全部 `missing`，且 `dirs` 行数仍等于组合数
 - **前缀为空目录**：`opendir` 返回 0 条 entry，断言整组 `missing`（不能因为 `stat` 成功就逐叶去扫）
 - **前缀不可达**：断言整组 `unreachable` 并触发该机台熔断，后续组不再发起 I/O
@@ -1620,7 +1653,7 @@ running：逐文件复制，并发 4~8
 - 断言 `subDir` 不会为空，渲染时不会出现连续分隔符或缺失段
 - **任务隔离**：扫描任务结束后断言目标目录仍为空；复制任务开始后才出现文件
 - **0 文件不进复制**：全部目录 `missing` 时，断言任务在扫描结束后即终止，不创建目标目录
-- **空间不足**：模拟可用空间 < `totalBytes × 1.05`，断言拒绝进入复制并给出具体数值
+- **空间不足**：模拟可用空间 < `plan.bytes × 1.05`，断言拒绝进入复制并给出具体数值
 - 构造 EL 目录树 `\\tmp\dc\B04-A\EL\20261023\白班\18\NG_脏污_B\`，放 2 张图，断言扫描到 2 个、机台根为 `\\tmp\dc\B04-A`
 - EL 目录树里混入 `temp\`、`gj-dc-el - 快捷方式.lnk`、`.DS_Store`：断言 `temp` 与 `.lnk` 进 `ignored`，`.DS_Store` 两边都不出现
 - EL 目录树只放 1 个机台目录 + 多个 `.lnk`：断言判定为形态 A 并提示（阈值 ≥ 2 生效）
