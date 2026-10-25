@@ -1,8 +1,10 @@
 # shx-tools 架构设计与技术栈
 
-> 版本：v0.5 ｜ 日期：2026-10-25
+> 版本：v0.6 ｜ 日期：2026-10-25
 > 上游文档：《shx-tools 需求与方案设计（总览）》
 > 关联文档：《shx-tools F1 图片收集设计》
+>
+> **v0.6**：新增 `paused` 状态与暂停/恢复/断点续传（见 7、12.5）；`interrupted` 变为可续；删除 `move` 模式，复制只写目标不改源；重命名改为可复现的序号后缀。
 >
 > **v0.5**：进度字段定口径——`done` 是「已处理」（成功 + 跳过 + 失败），`metrics` 拆成 `copied`/`skipped`/`failed`；速度与剩余时间由界面派生，worker 不算（见 8 章约束表）。
 >
@@ -55,7 +57,7 @@
 |---|---|---|---|
 | Main | 应用启动 | 应用退出 | 1 |
 | Renderer | 主窗口创建 | 窗口关闭 | 1（本期不用多窗口） |
-| Worker | 每次任务开始时 fork | 任务终态后 5 秒回收；取消时立即 kill | 最多 2（与全局并发上限一致） |
+| Worker | 每次任务开始时 fork | 任务终态后 5 秒回收；取消/暂停时立即 kill | 最多 2（与全局并发上限一致） |
 
 **为什么用 `utilityProcess` 而不是 `worker_threads`**
 
@@ -113,7 +115,7 @@
 |---|---|---|---|---|
 | `app-shell` | main | 单实例、窗口、菜单、生命周期兜底 | `createMainWindow()` | core |
 | `ipc-router` | main | 注册通道、zod 校验、错误包装为标准响应 | `registerChannels()` | core、shared |
-| `task-manager` | main | 两类任务的创建、状态机、并发闸门、持久化 | `create(kind)/cancel/get/list/latestScan` | task-store、worker-host |
+| `task-manager` | main | 两类任务的创建、状态机、并发闸门、持久化、暂停与恢复 | `create(kind)/pause/resume/cancel/get/list/latestScan` | task-store、worker-host |
 | `worker-host` | main | fork/kill worker、消息编解码、心跳、超时 | `exec(taskId, msg)` | protocol |
 | `tool-registry` | main+worker | 工具清单与执行器映射 | `list()` / `getExecutor(id)` | tools |
 | `storage` | main | 配置、模板、任务记录读写，原子写与损坏恢复 | `load/save/patch` | atomic-write |
@@ -158,7 +160,7 @@
                 觉得不值当就到此为止，或改参数重扫
 
 ── 复制任务 ──────────────────────────────────────────────
-⑦ 填复制参数    目标目录 / 输出结构 / 同名冲突 / 复制或移动
+⑦ 填复制参数    目标目录 / 输出结构 / 同名冲突
 ⑧ 点「开始复制」 UI → task:create({ kind:'copy', params:{ sourceScanId, ... } }) → main
 ⑨ 预检         main: 校验 sourceScanId 有效、files.jsonl 还在、目标可写、空间 ≥ 总量 × 1.05
                 → 建 CopyPlan → preparing 结束转 running
@@ -272,7 +274,6 @@ export interface CopyParams {
   targetDir: string;
   layout: 'tree' | 'flat';
   conflict: 'rename' | 'overwrite' | 'skip';
-  operation: 'copy' | 'move';
 }
 ```
 
@@ -291,7 +292,7 @@ export interface CopyParams {
 
 | 理由 | 具体表现 |
 |---|---|
-| 两者副作用不同 | 扫描只读（可随便重跑），复制写盘（移动模式还删源）。放在一个任务里，取消语义要写两套，记录也说不清"这次到底动没动文件" |
+| 两者副作用不同 | 扫描只读（可随便重跑），复制写盘（只写目标，不碰源）。放在一个任务里，取消语义要写两套，记录也说不清"这次到底动没动文件" |
 | 清单是资产，不是中间态 | 扫一次可以复制多次（换目标目录、换冲突策略），也可以只看不复制。清单落盘后成为被引用的对象 |
 | 失败归因不同 | 扫描失败是"机台连不上"，复制失败是"文件被占用"。混在一条记录里，失败清单只能靠猜 |
 | 耗时统计对不上 | 扫描 40 秒 + 复制 4 分钟记成一条 `4m40s`，用户看不出哪一半慢 |
@@ -304,11 +305,13 @@ export interface CopyParams {
 ## 7. 任务状态机
 
 ```
-扫描任务：created ──▶ preparing ──────────────▶ succeeded
-                          └──▶ failed / canceled
+扫描任务：created ──▶ preparing ─────────────▶ succeeded
+                        ⇅ paused / interrupted
+                        └──▶ failed / canceled
 
 复制任务：created ──▶ preparing ──▶ running ──▶ succeeded
-                          └───────────┴──▶ failed / canceled
+                        ⇅ paused / interrupted
+                        └───────────┴──▶ failed / canceled
 ```
 
 两类任务**共用同一台状态机**，区别只在终止边：扫描没有"执行"阶段，`preparing` 干完就是 `succeeded`；复制的 `preparing` 是目标预检，之后进 `running` 真正写盘。
@@ -317,15 +320,22 @@ export interface CopyParams {
 |---|---|---|---|---|
 | created | `start` | preparing | scan / copy | fork worker，记录 `startedAt`、`kind` |
 | preparing | `done` | succeeded | **仅 scan** | 写 `ScanResult` 汇总，明细已落盘，任务到此为止 |
-| preparing | `prepareDone` | running | **仅 copy** | 载入扫描清单、目标预检通过（可写、空间够），进入复制 |
+| preparing | `prepareDone` | running | **仅 copy** | 载入扫描清单、目标预检通过，进入复制 |
 | preparing | `prepareError` | failed | scan / copy | 记录错误码与消息 |
-| running | `done` | succeeded | copy | 写 `ToolResult`，生成报告 |
+| running | `done` | succeeded | copy | 写 `ToolResult`，生成报告，删除复制日志 |
 | running | `error` | failed | copy | 写错误栈与失败清单，保留已完成计数 |
 | running | worker 非零退出 | failed | copy | 标记 `E_WORKER_CRASH` |
-| preparing / running | `cancel` | canceled | scan / copy | kill worker，保留已完成部分 |
-| 任意非终态 | 应用退出 | interrupted | scan / copy | 下次启动扫描残留，标记为中断 |
+| preparing / running | `pause` | paused | scan / copy | 立即 kill worker；日志已落盘，进度可续 |
+| paused | `resume` | preparing | scan / copy | fork 新 worker，读日志重建已完成集，从断点继续 |
+| paused | `cancel` | canceled | scan / copy | 保留已完成部分，删除复制日志，不可继续 |
+| preparing / running | `cancel` | canceled | scan / copy | 优雅中止 + 3 秒强杀，清理临时文件 |
+| 任意非终态 | 应用退出 | interrupted | scan / copy | 下次启动补写；与 `paused` 一样可继续 |
 
-终态不可逆。`interrupted` 是启动时的补写状态，用于处理"任务跑到一半断电"的情况。
+**只有三种终态不可逆**：`succeeded` / `failed` / `canceled`。`paused` 与 `interrupted` 是**可续的非终态**——它们不在跑，但把续传需要的东西全留在磁盘上（扫描的 `dirs.jsonl`、复制的 `copy.jsonl`）。
+
+**`interrupted` 不自动恢复**：断电之后磁盘、网络、目标目录都可能变过，续传必须由人点「继续」触发。启动时只做一件事——把非终态补写成 `interrupted`，任务中心显示「已中断 · 可继续」。
+
+**取消与暂停的区别只有一个**：取消之后不再提供「继续」，并且删掉复制日志；其余机制完全相同（见 12.3）。
 
 **扫描任务不进 `running`**：它没有"执行"这一步，扫描本身就是执行。硬塞一个 running 会让状态名骗人，也会让"复制任务才能改目标盘"这条边界在代码里变得含糊。
 
@@ -345,7 +355,7 @@ params → 渲染模板 → 展开 → [目录₁, 目录₂, …, 目录ₙ]
 | 长度恒定 | 中途某台机不可达，**不是"少扫一项"，而是"这一项标成 `unreachable`"**。列表不收缩，进度分母不变 |
 | 展开与磁盘无关 | 展开是纯函数（模板 + 参数），一次 `readdir` 都不做。所以"要扫哪些目录"在按下开始前就能算出来——UI 上"将扫描 1,240 个目录"就是这个 N |
 | 每项恰好一个状态 | 六选一（`ok`/`empty`/`missing`/`unreachable`/`denied`/`error`），互斥且穷尽，没有"未判定"的中间态 |
-| 完成条件 | N 项全部有状态；或用户取消；或任务级失败（如入口整体不可读） |
+| 完成条件 | N 项全部有状态；或用户暂停/取消；或任务级失败（如入口整体不可读） |
 
 **文件是目录的内容，不是任务的单位。** 一个目录里有 0 张还是 200 张图，都只占列表里的一行。`files.jsonl` 是把这些行里的文件摊平后的**次级产物**，供复制任务消费——它不属于扫描任务的边界，删掉它扫描任务依然是完整的。
 
@@ -359,12 +369,12 @@ params → 渲染模板 → 展开 → [目录₁, 目录₂, …, 目录ₙ]
 | 该扫描的 `files.jsonl` 仍在（未被清理） | `E_FS_NOT_FOUND`「扫描明细已清理，请重新扫描」 |
 | 扫描时的扩展名/结构等与复制参数不冲突（扩展名来自扫描，复制不能改） | `E_PARAM_INVALID` |
 
-**取消语义按 kind 分**：
+**停止与续传按 kind 分**：
 
-| 任务 | 取消后 |
-|---|---|
-| 扫描 | 无任何副作用，已扫目录的状态保留，报告"已扫描 120 / 180" |
-| 复制 | 已复制的文件保留，报告"已处理 3,200 / 4,821"；`move` 模式已删除的源文件不恢复 |
+| 任务 | 暂停 | 取消 | 续传 |
+|---|---|---|---|
+| 扫描 | 立即 kill，已判定目录的状态全部保留 | 与暂停同机制，但不再提供继续 | 读 `dirs.jsonl` 的 `path` 集合，跳过已判定的单元；只读操作，重做也无害 |
+| 复制 | 立即 kill，最多 8 个在飞文件留下 `.shx-part` | 优雅中止 + 强杀，清理临时文件 | 读 `copy.jsonl` 跳过已记账项，未记账项按 12.5 的认领规则处理 |
 
 ## 8. Worker 通信协议
 
@@ -373,8 +383,8 @@ params → 渲染模板 → 展开 → [目录₁, 目录₂, …, 目录ₙ]
 // taskId 贯穿所有消息，既是关联键，也是日志里的任务标识
 
 type MainToWorker =
-  | { taskId: string; type: 'scan'; toolId: string; params: ScanParams }
-  | { taskId: string; type: 'copy'; toolId: string; params: CopyParams }
+  | { taskId: string; type: 'scan'; toolId: string; params: ScanParams; taskDir: string; resume: boolean }
+  | { taskId: string; type: 'copy'; toolId: string; params: CopyParams; taskDir: string; resume: boolean }
   | { taskId: string; type: 'cancel' }
   | { taskId: string; type: 'resend'; stream: 'dirs' | 'files'; fromSeq: number }
   | { taskId: string; type: 'ping' };
@@ -392,6 +402,9 @@ type WorkerToMain =
 | 约束 | 说明 |
 |---|---|
 | 一 worker 一任务 | 不复用进程，避免上一个任务的状态污染下一个；scan 与 copy 各自 fork |
+| 暂停不发消息 | 暂停 = 主进程直接 `kill()`。所以协议里没有 `pause` 消息，也没有"挂起的 worker"——续跑靠磁盘上的日志，不靠进程内存 |
+| `resume: true` | worker 启动后先读 `taskDir` 下的日志算出已完成集，再继续分配新工作；日志由主进程写，worker 只读，不改变"状态单点写" |
+| 日志先于汇总 | 一个目录的 `files` 行必须先于该目录的 `dirs` 行落盘（同一 fsync 批次内即可）。否则崩溃后会出现「目录已完成、文件缺一半」，恢复出的是个对不上账的计划 |
 | 进度节流在 worker 侧 | 每 100 ms 或每 200 条合并一次，跨进程消息量大时 UI 会卡 |
 | 进度字段只报事实 | `done`/`total` 是「已处理」与计划总数（`done = copied + skipped + failed`），所以有跳过也能走到 100%；`metrics` 的 `copied`/`skipped`/`failed` 各自独立；速度与剩余时间由渲染层从两次事件求差，worker 不计算——派生量进契约就会出现两个真相 |
 | 明细批量 + 序号 | `dirs` / `files` 各按 200 条一批发送，两个流各自从 `seq=1` 自增；主进程校验连续性，缺号发 `resend` |
@@ -410,6 +423,8 @@ type WorkerToMain =
 | `tool:list` | invoke | — | `ToolManifest[]` |
 | `task:create` | invoke | `{ toolId, kind, params }` | `{ taskId }`（创建即入队执行；`kind` = `scan` \| `copy`） |
 | `task:cancel` | invoke | `{ taskId }` | `{ ok }` |
+| `task:pause` | invoke | `{ taskId }` | `{ ok }`（立即返回；kill worker，磁盘日志即检查点） |
+| `task:resume` | invoke | `{ taskId }` | `{ ok }`（仅 `paused` / `interrupted`；需要重新占用并发闸门） |
 | `task:list` | invoke | `{ limit?, offset?, kind? }` | `TaskRecord[]` |
 | `task:get` | invoke | `{ taskId }` | `TaskRecord` |
 | `task:remove` | invoke | `{ taskId }` | `{ ok }`（仅终态、非引用；连同明细删除） |
@@ -435,7 +450,7 @@ type WorkerToMain =
 | `app:diagnostics` | invoke | — | `{ path }` |
 | `task:progress` | event | `{ taskId, phase, done, total, current?, elapsedMs, metrics? }` | — |
 | `task:log` | event | `{ taskId, level, message, ts }` | — |
-| `task:state` | event | `{ taskId, state, error?: TaskError }` | — |
+| `task:state` | event | `{ taskId, state, resumable, progress?, error?: TaskError }` | —（`resumable` 决定任务中心显不显示「继续」） |
 | `update:status` | event | `{ stage, percent?, version?, mandatory? }` | — |
 
 **preload 暴露的形状**（渲染进程唯一入口）：
@@ -455,7 +470,7 @@ interface EntryRecord {
 ```ts
 window.shx = {
   tool:     { list() },
-  task:     { create(p), cancel(id), remove(id), list(q), get(id), dirs(q), files(q),
+  task:     { create(p), cancel(id), pause(id), resume(id), remove(id), list(q), get(id), dirs(q), files(q),
               exportFailures(id), latestScan(toolId),
               onProgress(cb), onLog(cb), onState(cb) },
   entry:    { scan(path), list(), refresh(id), remove(id) },
@@ -478,8 +493,9 @@ window.shx = {
 │                                      # （zod 校验，损坏时备份并重置）
 ├─ tasks/                              # 任务记录，一个任务一个 JSON（扫描、复制都在这里）
 │  ├─ <taskId>.json                    # 任务记录：kind、状态、参数快照、统计、失败清单
-│  ├─ <taskId>.dirs.jsonl              # 目录明细（仅扫描任务；保留最近 50 条）
-│  └─ <taskId>.files.jsonl             # 文件清单（仅扫描任务；保留最近 50 条）
+│  ├─ <taskId>.dirs.jsonl              # 目录明细（仅扫描任务；保留最近 50 条）——同时也是扫描的续传日志
+│  ├─ <taskId>.files.jsonl             # 文件清单（仅扫描任务；保留最近 50 条）
+│  └─ <taskId>.copy.jsonl              # 复制结果日志（仅复制任务；只在 paused / interrupted 期间存在，进终态即删）
 ├─ templates/                          # 参数模板（按 tool 隔离）
 │  └─ <toolId>/<name>.json
 ├─ data/                               # 工具专属私有持久化数据
@@ -545,12 +561,14 @@ window.shx = {
   "toolVersion": "0.1.0",
   "kind": "copy",
   "state": "running",
+  "resumable": true,
   "sourceScanId": "20261023-101532-a1b2",
+  "progress": { "done": 3215, "total": 4821 },
+  "activeMs": 140000,
   "params": {
     "targetDir": "E:\\collected",
     "layout": "tree",
-    "conflict": "rename",
-    "operation": "copy"
+    "conflict": "rename"
   },
   "startedAt": "2026-10-24T14:02:10+08:00",
   "finishedAt": null,
@@ -569,13 +587,14 @@ window.shx = {
 **两类记录的 TypeScript 形状**
 
 ```ts
-type TaskState = 'created' | 'preparing' | 'running' | 'succeeded' | 'failed' | 'canceled' | 'interrupted';
+type TaskState = 'created' | 'preparing' | 'running' | 'paused' | 'succeeded' | 'failed' | 'canceled' | 'interrupted';
 
 interface CopySummary {
   planned:  { fileCount: number; bytes: number };
   copied:   { fileCount: number; bytes: number };
   conflict: { renamed: number; overwritten: number; skippedExisting: number };
   skippedDuplicate: number;
+  adopted:  number;                  // 续传时认领回来的项
   failed:   { fileCount: number };
 }
 
@@ -586,10 +605,13 @@ interface TaskRecord {
   toolVersion: string;
   kind: TaskKind;
   state: TaskState;
+  resumable: boolean;                // paused / interrupted 为 true；终态恒为 false
   params: ScanParams | CopyParams;   // 快照，完整可回放
   sourceScanId?: string;             // 仅 copy
   startedAt: string;                 // ISO 8601
-  finishedAt: string | null;
+  finishedAt: string | null;         // 仅终态有值
+  activeMs: number;                  // 累计运行时长，暂停时间不计入
+  progress?: { done: number; total: number };
   summary: ScanResult['summary'] | CopySummary;
   dirsTruncated?: boolean;
   filesTruncated?: boolean;
@@ -607,14 +629,15 @@ interface TaskRecord {
 | 原子写 | 先写 `<id>.json.tmp`，`fsync` 后 `rename` 覆盖，避免断电产生半截 JSON |
 | **创建即写** | `created` 一落定就写第一份（含 `kind`、`params`、`startedAt`）。进程此时崩掉，任务中心也能看到这条记录并被标成「已中断」 |
 | 状态迁移即写 | 每次 `state` 变化立即写。一个任务最多 3 次迁移，不值得节流 |
-| 运行中指标 | 每 2 秒或每 500 条更新 `summary`，覆盖写 |
+| 运行中指标 | 每 2 秒或每 500 条更新 `summary` 与 `progress`，覆盖写；`activeMs` 同步累加（暂停时间不计入） |
 | 终态 | 立即写并 `fsync`，**写完才推 `task:state`**——否则界面显示"已完成"而磁盘上没有，重启就丢 |
-| 退出补写 | 非终态记录在下次启动时补写 `interrupted` |
+| 退出补写 | 非终态记录在下次启动时补写 `interrupted`，并置 `resumable: true` |
 | 写失败 | 记日志、任务继续跑；连续 3 次失败弹一次「任务记录无法写入（磁盘满或无权限）」，不阻断主流程 |
 | 损坏恢复 | 解析失败时把坏文件改名为 `.corrupt`，UI 显示"记录损坏"而非白屏 |
 | 滚动清理 | 按 `kind` 分别计算，各保留 200 条，按 `startedAt` 删最旧的，不删运行中的任务 |
+| **可续任务不淘汰** | `paused` / `interrupted` 的任务**永不参与淘汰**——把它们删掉等于把「继续」按钮变成陷阱。它们由用户显式取消或删除后才出榜 |
 | 引用保护 | 清理扫描记录前检查是否被复制任务引用；被引用时**连明细一起保留**，直到该复制任务也出榜 |
-| 单条删除 | 仅终态任务可删（运行中拒绝），删除需二次确认；连同 `.dirs.jsonl` / `.files.jsonl` 一起删。被复制任务引用的扫描记录不可删 |
+| 单条删除 | 仅终态任务可删（运行中、暂停中、已中断一律拒绝，需先取消），删除需二次确认；连同 `.dirs.jsonl` / `.files.jsonl` / `.copy.jsonl` 一起删。被复制任务引用的扫描记录不可删 |
 
 **为什么一个任务一个文件，而不是一个 `tasks.json` 装全部**：
 
@@ -726,6 +749,7 @@ export interface TaskError {
 | 全局并发任务 | 2 | 超过后互相拖慢磁盘与网络，收益为负 |
 | 单工具并发任务 | 1（**不区分 kind**） | 同一工具的 scan 与 copy 也不许并行：copy 依赖 scan 的清单，且两者抢同一条 UNC 链路 |
 | 同一扫描的并发复制 | 1 | 两个复制任务写同一个目标目录会互相覆盖；`TaskManager` 按 `sourceScanId` 去重 |
+| 暂停的任务 | 不占名额 | 暂停即 kill，没有 worker、不碰磁盘与网络；占着闸门会让「暂停」变成阻塞别人的手段。但 `sourceScanId` 锁**保留到终态**，否则暂停的复制和新建的复制会写同一个目标 |
 | 目录遍历并发 | 本地 8 / UNC 4 | UNC 并发过高反而更慢，且会压垮共享 |
 | 文件复制并发 | 本地 8 / UNC 4 | 与遍历共用一个并发池，避免总量失控 |
 | 单文件读取 | 流式，逐行处理 | 内存占用与文件行数解耦 |
@@ -741,29 +765,86 @@ Windows 原生 SMB 客户端在遇到离线或断网的目标 IP 时，系统内
 2. **熔断与快衰**：若探活失败，触发机台级熔断，不再对该机台名下的任何子目录发起网络 I/O，直接将其所有组合判定为 `unreachable`（`E_NET_UNREACHABLE` / `E_NET_TIMEOUT`），并立即推进至下一机台。
 3. **收益**：将单个离线机台引起的阻塞时间从“60 组合 × 20 秒 = 20 分钟”降至“1 次探测 1.5 秒”，杜绝 UI 与执行队列假死。
 
-### 12.3 两级优雅取消协议（Two-Tier Cancellation）
+### 12.3 取消与暂停（Cancel / Pause）
 
-任务取消必须保证确定性与零副作用：
+两者都终止执行，但**语义与收尾方式不同**——差别只有一个：取消之后没有「继续」。
 
-1. **第一级：优雅中止（Graceful Abort）**
-   - 主进程收到取消请求后，向 Worker 发送 `{ type: 'cancel' }` 消息；
-   - Worker 内触发 `AbortController.abort()`，`signal.aborted` 转为 `true`；
-   - 任务循环立即清空待执行队列，停止分派新 I/O；
-   - 正在进行的流式写入主动关闭流，并异步清理未写完的临时文件（见 12.4）；
-   - Worker 汇总当前已完成指标，回传终态 `ToolResult`，主进程标记任务为 `canceled`。
-2. **第二级：超时强杀（Force Kill）**
-   - 主进程发出取消指令后启动 3 秒看门狗定时器；
-   - 若 Worker 因系统调用深层阻塞在 3 秒内未响应退出，主进程直接调用 `utilityProcess.kill()` 强行终止；
-   - 状态机记录 `canceled` 并附带说明“进程已被强制回收”。
+**取消（终态，不可续）**——保持原来的两级协议，因为它的承诺是"零残留"：
+
+1. 主进程发 `{ type: 'cancel' }`；worker 触发 `AbortController`，清空待执行队列，关闭流并 `unlink` 未写完的 `${dest}.shx-part`；回传已有指标，主进程标记 `canceled`。
+2. 3 秒看门狗：worker 若卡在 UNC 系统调用里不响应，直接 `utilityProcess.kill()`。
+3. 收尾时删除 `copy.jsonl`（不可续，日志没用），保留 `.dirs.jsonl` / `.files.jsonl` 供回看。
+
+**暂停（非终态，可续）**——不优雅，直接 kill：
+
+| 项 | 做法 | 原因 |
+|---|---|---|
+| 停机方式 | 主进程发 `task:pause` 后**立即** `kill()`，不等在飞项 | 等最多 3 秒还要写一套 drain 逻辑，而恢复本来就要处理在飞项；kill 更快更简单 |
+| 已完成的记录 | 全部已在磁盘上（每 200 条或 200 ms 一批，批内 fsync） | 日志就是检查点，不需要额外快照 |
+| 在飞项 | 最多 8 个，可能留下 `.shx-part`，也可能已 rename 但未记账 | 恢复时按 12.5 的认领规则处理；`.shx-part` 一律先删再写 |
+| 状态 | `paused` + `resumable: true`，`finishedAt` 保持 `null` | 它没结束，只是没在跑 |
+| 并发闸门 | 立即释放 | 暂停不该阻塞其他任务 |
+
+**为什么暂停可以 accept「最多 8 个在飞项不确定」**：复制本身是幂等的（写临时文件再原子 rename），认领规则又把不确定窗口压到"同尺寸 + 同时间窗"这一种情况，代价上限是重做 8 个文件，比等 3 秒更划算。
+
+**扫描没有可收拾的东西**：它不写盘，所以暂停与取消对它都是立即 kill，差别只在状态名和「继续」按钮。
 
 ### 12.4 文件原子写入与残损清理（Atomic Copy）
 
-在批量复制数千张图片时，若中途发生断电、用户取消、网络断开或磁盘满，直接覆盖目标文件极易造成“半截破损图片”（文件大小异常、无法查看）。
+在批量复制数千张图片时，若中途发生断电、用户取消、网络断开或磁盘满，直接覆盖目标文件极易造成"半截破损图片"（文件大小异常、无法查看）。
 
 **安全复制策略**：
 1. 复制过程中，目标文件一律先写入临时后缀：`${dest}.shx-part`；
 2. 数据写入完成并通过 `stat.size` 校验后，通过原子操作 `fs.rename` 转正为最终目标文件名；
-3. 任何复制异常或收到 `signal.aborted` 时，立即捕获并执行 `fs.unlink(partPath)`，确保目标目录中绝不残留 0 字节或破损文件。
+3. 任何复制异常或收到 `signal.aborted` 时，立即捕获并执行 `fs.unlink(partPath)`，确保目标目录中绝不残留 0 字节或破损文件；
+4. **续传前先清理**：恢复任务时，对每个尚未记账的项，若 `${dest}.shx-part` 存在则先 `unlink`——它只可能是上一次被 kill 时留下的半截文件。
+
+### 12.5 断点续传（Resume）
+
+**扫描：日志即进度，不需要额外状态。**
+
+```
+剩余单元 = 全量 ScanUnit − dirs.jsonl 中已出现的 path 集合
+```
+
+`dirs.jsonl` 每行带 `path`，与序号无关，所以并发导致的乱序不影响判定。20,000 行约 3 MB，重建集合是毫秒级。已扫目录的 `hash` 与文件清单已在 `files.jsonl` 里，**不重算**。
+
+**复制：`copy.jsonl` 是唯一账本。**
+
+```json
+{"seq":1,"index":3216,"status":"copied","dest":"2026-10-23\\东区\\6B\\明暗片\\13\\A\\IMG_0142.jpg","bytes":1048576}
+```
+
+| 项 | 规则 |
+|---|---|
+| 写入 | 每项一行，`status` ∈ `copied` / `skipped` / `failed` / `adopted`；按 200 行或 200 ms 一批追加并 `fsync` |
+| 记账顺序 | 先写完目标文件（含 rename），再记这一行。中间被 kill 的那几项就是"未记账但在盘上"的 |
+| 生命周期 | 只在 `paused` / `interrupted` 期间存在；进 `succeeded` / `failed` / `canceled` 立即删除 |
+| 体积 | 上限 10 万行、约 15 MB，且只在一份任务暂停时占用 |
+
+**未记账项怎么判定**（恢复时唯一需要动脑的地方）：
+
+| 冲突策略 | 目标已存在的情况 | 处理 |
+|---|---|---|
+| `skip` | 存在 | 按原语义记 `skipped`（本来就幂等，不需要认领） |
+| `overwrite` | 存在、`size` 与源一致、且 `mtime ≥ 本轮 startedAt` | 认领为 `adopted`，不重写 |
+| `overwrite` | 其他 | 重做——覆盖是幂等的 |
+| `rename` | 目标名由下面的规则算出，存在且 `size` 一致 | 认领为 `adopted` |
+| `rename` | 其他 | 重做 |
+
+`mtime ≥ startedAt` 是必需的：产线上同尺寸图片极常见，只比 `size` 会把"任务开始前就存在的同名文件"误认成自己写的，`overwrite` 就会漏覆盖。
+
+**重命名必须可复现**：`rename` 策略下，同名冲突时不用「下一个空闲号」，而用**项序号**——`IMG_0142_0017.jpg`（4 位补零，超过 9999 自然变 5 位）。这样恢复时能算出同一个名字，看见它就认领，不会因为"上次已经写成 `_1`"再生成一份 `_2` 副本。文件名里带序号是可续传的代价，也是它的前提。
+
+**恢复后的不变量**（必须写进测试）：
+
+| 不变量 | 含义 |
+|---|---|
+| 单调 | 恢复后的 `done` 从上次的值接着涨，进度条不回退 |
+| 不重写 | 已记账的项不会被写第二次 |
+| 不丢项 | 终态时 `copied + skipped + failed + adopted === planned` |
+| 无残留 | 结束时目标目录中 `.shx-part` 数量为 0 |
+| 空间 | 恢复时的空间预检只按**剩余**字节比对，不是全量 |
 
 ---
 
@@ -846,7 +927,7 @@ shx-tools/
 │  │  ├─ tool/
 │  │  │  ├─ ToolPage.tsx            # 按 toolId 渲染运行时表单
 │  │  │  ├─ components/
-│  │  │  │  └─ TaskSummaryCard.tsx  # 副栏：预估 / 进度 / 完成 / 失败 四态
+│  │  │  │  └─ TaskSummaryCard.tsx  # 副栏：预估 / 进度 / 待复制 / 完成 / 失败 / 已暂停
 │  │  │  └─ custom/
 │  │  │     ├─ ImageCollectorForm.tsx # F1 自定义表单（前端专用组件）
 │  │  │     ├─ MachineGrid.tsx        # 机台选择（形态 A 单选区域 / 形态 B 分组）
@@ -1181,7 +1262,7 @@ npm create @quick-start/electron@latest shx-tools -- --template react-ts
 |---|---|---|
 | 0.5 天 | 生成、清理示例、目录重排、alias | 目录符合 14.1；`npm run dev` 起空窗口，无残留示例页 |
 | 0.5 天 | worker 入口、asarUnpack、双目标打包 | **安装后的 exe** 能 fork 出 worker 并往返一条消息 |
-| 1.5 天 | 任务骨架：状态机、worker-host、IPC 路由、日志、假工具 | 假工具跑通 `scan → 落盘明细 → copy → 报告` 两条任务链路 |
+| 1.5 天 | 任务骨架：状态机（含 `paused` / `interrupted`）、worker-host、IPC 路由、日志、假工具 | 假工具跑通 `scan → 落盘明细 → copy → 报告` 两条任务链路，并在中途暂停后「继续」跑完 |
 | 0.5 天 | 联调修补 | 无阻塞缺陷 |
 
 **改造清单（逐项打勾）**
@@ -1214,6 +1295,7 @@ npm create @quick-start/electron@latest shx-tools -- --template react-ts
 | 工具如何接入 | 静态注册 + `ToolExecutor` 契约 | 数量有限，类型安全优于动态加载 |
 | 状态谁写 | 仅主进程 `TaskManager` | 单点写避免 UI 与磁盘不一致 |
 | 任务怎么切 | **扫描任务 / 复制任务两类**，清单落盘传递 | 副作用不同、失败归因不同、清单可复用；`preview/confirm` 三个概念随之删除 |
+| 任务能否中断 | 暂停 / 继续 / 取消 / 断点续传；取消不可续 | 暂停 = kill + 磁盘日志，恢复跳过已完成项；取消若也能续，两个概念就合并了 |
 | 业务层能否碰 electron | 不能 | 脱离桌面环境可单测 |
 | 任务记录存哪 | JSON 文件 + 原子写 | 200 条量级，零原生依赖 |
 | 并发上限 | 全局 2 / 单工具 1（不分 kind） | 超过后互相拖慢，收益为负 |
