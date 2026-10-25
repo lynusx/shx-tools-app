@@ -1,0 +1,43 @@
+appId: com.shx.tools
+productName: shx-tools
+
+directories:
+  output: release
+  buildResources: build
+
+files:
+  - out/**/*
+  - package.json
+
+asar: true
+# utilityProcess.fork 需要磁盘真实路径，worker 必须解包
+asarUnpack:
+  - out/main/worker.js
+  - out/main/chunks/**
+
+win:
+  icon: build/icon.ico
+  executableName: shx-tools
+  target:
+    - target: nsis
+      arch: [x64]
+    - target: zip
+      arch: [x64]
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  artifactName: shx-tools-Setup-${version}.exe
+
+zip:
+  artifactName: shx-tools-${version}-win-x64.zip
+
+# 占位 URL：electron-builder 没有 publish 配置就不会生成 latest.yml。
+# 运行时真正用的源来自 config.json（见《打包、分发与自动更新》）。
+publish:
+  provider: generic
+  url: https://updates.invalid/
+
+npmRebuild: false

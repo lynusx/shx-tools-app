@@ -2,7 +2,71 @@
 
 内部自动化工具箱：一个可扩展的 Windows 桌面容器，把重复的文件收集劳动收敛为「选工具 → 填参数 → 跑任务 → 看结果」。首版交付 **F1 图片批量收集**。
 
-> 当前状态：方案设计完成，代码尚未开始（M0 未启动）。
+> 当前状态：设计文档完成；**M0 任务骨架已落地**——假工具能跑通「扫描 → 明细落盘 → 暂停 → 继续 → 复制 → 报告」。
+> 还差最后一步验收：NSIS 安装包装到干净的 Windows 机器上跑通假任务（本机是 macOS，见文末）。
+
+## 快速开始
+
+```bash
+npm install
+npm run dev      # 开发态：Electron 窗口 + HMR
+npm test         # 单元测试（Vitest）
+npm run lint     # ESLint，含渲染进程 / 工具的依赖边界规则
+npm run build    # typecheck + main / preload / worker / renderer 构建
+npm run smoke    # 无窗口跑通整条任务链路，退出码即结果
+```
+
+在受限环境（CI、无桌面会话、沙箱）里 Electron 起不来时，追加 Chromium 开关：
+
+```bash
+npm run smoke -- --no-sandbox --disable-gpu
+```
+
+## M0 现在有什么
+
+| 模块 | 落点 | 状态 |
+|---|---|---|
+| 任务状态机 | `electron/core/task/task-state.ts` | 八态、合法迁移表、纯函数可单测 |
+| 任务编排 | `electron/core/task/task-manager.ts` | 创建 / 暂停 / 继续 / 取消 / 删除、全局与单工具并发闸门、状态单点写 |
+| 持久化 | `electron/core/task/task-store.ts` | 一任务一 JSON、明细 JSONL、原子写、损坏改名、按 kind 保留 200 条 |
+| worker | `electron/core/worker/worker-host.ts` + `electron/worker/entry.ts` | fork / kill、心跳 15 秒判死、进度节流、明细批量 + `resend` |
+| 契约 | `shared/tool-contract.ts`、`shared/worker-protocol.ts` | `ToolExecutor`、`TaskRecord`、主进程 ↔ worker 消息 |
+| 假工具 | `tools/fake/` | scan / copy 两个 kind，支持续传 |
+| 界面 | `src/` | 侧栏 + 工具页（参数 / 进度 / 暂停继续取消）+ 任务中心 |
+
+**已经验证过的**：假工具扫描 30 个目录，暂停时 15 条明细已落盘，继续后总数仍是 30（无重复）；复制任务读源清单、产出报告；`typecheck` / `lint` / 7 个单测 / 三端构建全绿。
+
+## 仓库结构
+
+```
+electron/            主进程、preload、worker（Node 侧）
+  main.ts            入口：单实例、初始化、IPC 注册与广播、生产 CSP
+  app/               窗口、冒烟脚本
+  core/task/         task-state / task-manager / task-store
+  core/worker/       worker-host（跨环境路径、心跳、kill）
+  core/storage/      config.json、原子写
+  ipc/               通道注册（zod 校验入参）
+  worker/entry.ts    utilityProcess 入口
+  preload/           contextBridge 白名单 + 渲染进程类型
+shared/              三端共享契约（不依赖 electron）
+infra/               与业务无关的基础设施（并发信号量）
+tools/               静态注册表 + fake 工具
+src/                 渲染进程（React 19 + antd 6）
+tests/unit/          纯函数单测
+build/               应用图标
+力禧特/              F1 .lnk 解析用的真实样本
+shx-tools-*.md       五份设计文档
+```
+
+## 与设计文档的偏差（M0 期间产生，待回写）
+
+实现时发现契约有几处缺口，先按最小改动补上，M1 前应回写进《架构》第 6、8 章：
+
+| 位置 | 偏差 | 原因 |
+|---|---|---|
+| `ToolContext` | 增加 `taskId`、`tempDir`（任务目录）、`sourceTaskDir`、`resumeFrom` | 原文只说「worker 读日志算出已完成集」，没规定怎么把结果交给执行器 |
+| `CopyCommand` | 增加 `sourceScanId`、`resumeFrom` | 复制任务必须能定位源扫描；续传起点由主进程按上次进度传入 |
+| `electron-builder.yml` | `asarUnpack` 同时解包 `out/main/chunks/**` | worker 与 main 共享的错误码 chunk 会被 Rollup 拆出去，只解包 `worker.js` 不够 |
 
 ## 文档
 
@@ -16,18 +80,8 @@
 
 **阅读顺序**：需求 → 架构 → F1 → UI →（M3 再读）打包与更新。决策以需求第 8 节为准；细节冲突时以独立文档为准；**同一个决策只在一份文档里写全文**，其它文档只留编号。
 
-## 技术栈
+## 下一步
 
-Electron 44.9.x · React 19 · Ant Design 6.6.7 · TypeScript 5（strict）· Vite 8 + electron-vite · Zustand · zod · Vitest / Playwright。仅发布 Windows x64（NSIS + ZIP）。
-
-## 仓库结构
-
-```
-.agents/            项目级 agent 技能（不属于应用本体）
-力禧特/             F1 .lnk 解析用的真实样本（8 个 .lnk + lnk.json 期望值）
-shx-tools-*.md      五份设计文档
-```
-
-## 下一步（M0）
-
-按《架构设计与技术栈》第 15 章用 `electron-vite` 脚手架起步，只取构建配置、删净示例代码。M0 的验收标准不是「能起窗口」，而是**NSIS 安装包装到干净机器上，启动、跑完一个假任务、看到报告**。
+1. **M0 收尾（Windows）**：`npm run build:win` → 装到干净机器 → 跑假任务 → 看报告；顺带确认 asar 解包后的 worker 能 fork。
+2. **M1**：`.lnk` 解析、路径模板、笛卡尔积扫描、前缀预检、真实复制与报告。
+3. 契约偏差回写文档，避免 M1 按旧契约实现。
