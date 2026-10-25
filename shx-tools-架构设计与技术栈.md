@@ -1,8 +1,10 @@
 # shx-tools 架构设计与技术栈
 
-> 版本：v0.6 ｜ 日期：2026-10-25
+> 版本：v0.7 ｜ 日期：2026-10-25
 > 上游文档：《shx-tools 需求与方案设计（总览）》
-> 关联文档：《shx-tools F1 图片收集设计》
+> 关联文档：《shx-tools F1 图片收集设计》《shx-tools 打包、分发与自动更新》
+>
+> **v0.7**：并发改为配置项（1~4 / 1~2）；`config.json` 补字段级 schema，模板记录与版本迁移写入第 10 章；错误码表补齐 `E_TEMPLATE_*` 与 `E_UNKNOWN` 并定为唯一权威；续传规则收敛到 F1（见 12.5）。
 >
 > **v0.6**：新增 `paused` 状态与暂停/恢复/断点续传（见 7、12.5）；`interrupted` 变为可续；删除 `move` 模式，复制只写目标不改源；重命名改为可复现的序号后缀。
 >
@@ -436,9 +438,11 @@ type WorkerToMain =
 | `entry:list` | invoke | — | `EntryRecord[]` |
 | `entry:refresh` | invoke | `{ entryId }` | `{ entry, regions }` |
 | `entry:remove` | invoke | `{ entryId }` | `{ ok }` |
-| `template:save` | invoke | `{ toolId, name, params }` | `{ id }` |
+| `template:save` | invoke | `{ toolId, name, params }` | `{ id }`（同名覆盖前返回 `E_TEMPLATE_NAME_TAKEN`，由 UI 确认后带 `overwrite: true` 重试） |
 | `template:list` | invoke | `{ toolId }` | `TemplateRecord[]` |
 | `template:remove` | invoke | `{ templateId }` | `{ ok }` |
+| `template:export` | invoke | `{ templateId }` | `{ ok, path? }`（弹保存对话框，写 JSON 文件） |
+| `template:import` | invoke | `{ toolId }` | `{ ok, record?, code? }`（弹文件对话框，校验后落盘；`toolId` 不匹配返回 `E_TEMPLATE_TOOL_MISMATCH`） |
 | `fs:pickDirectory` | invoke | `{ title? }` | `string \| null`（单选） |
 | `fs:pickFiles` | invoke | `{ multi?, filters? }` | `string[]` |
 | `shell:openPath` | invoke | `{ path }` | `{ ok, message? }` |
@@ -474,7 +478,7 @@ window.shx = {
               exportFailures(id), latestScan(toolId),
               onProgress(cb), onLog(cb), onState(cb) },
   entry:    { scan(path), list(), refresh(id), remove(id) },
-  template: { save(t), list(toolId), remove(id) },
+  template: { save(t), list(toolId), remove(id), export(id), import(toolId) },
   fs:       { pickDirectory(o), pickFiles(o) },
   shell:    { openPath(p) },
   update:   { check(), download(), install(), testSource(sourceType, url), onStatus(cb) },
@@ -493,8 +497,8 @@ window.shx = {
 │                                      # （zod 校验，损坏时备份并重置）
 ├─ tasks/                              # 任务记录，一个任务一个 JSON（扫描、复制都在这里）
 │  ├─ <taskId>.json                    # 任务记录：kind、状态、参数快照、统计、失败清单
-│  ├─ <taskId>.dirs.jsonl              # 目录明细（仅扫描任务；保留最近 50 条）——同时也是扫描的续传日志
-│  ├─ <taskId>.files.jsonl             # 文件清单（仅扫描任务；保留最近 50 条）
+│  ├─ <taskId>.dirs.jsonl              # 目录明细（仅扫描任务；保留最近 50 个任务的）——同时也是扫描的续传日志
+│  ├─ <taskId>.files.jsonl             # 文件清单（仅扫描任务；保留最近 50 个任务的）
 │  └─ <taskId>.copy.jsonl              # 复制结果日志（仅复制任务；只在 paused / interrupted 期间存在，进终态即删）
 ├─ templates/                          # 参数模板（按 tool 隔离）
 │  └─ <toolId>/<name>.json
@@ -507,7 +511,37 @@ window.shx = {
    └─ updates/                         # 更新包下载缓存
 ```
 
-**`config.json` 的分工**：跨工具、跨会话都要用的东西才放这里——更新源、窗口尺寸与位置、`lastRoute`（启动恢复上次页面）、侧栏折叠状态。**不放业务数据**，业务数据一律进 `data/<toolId>/` 或 `templates/<toolId>/`。
+**`config.json` 的分工**：跨工具、跨会话都要用的东西才放这里——更新源、窗口尺寸与位置、`lastRoute`（启动恢复上次页面）、侧栏折叠状态、并发上限。**不放业务数据**，业务数据一律进 `data/<toolId>/` 或 `templates/<toolId>/`。
+
+`config.json` 是唯一有**字段级 schema** 的配置文件，zod 校验，损坏时备份并重置：
+
+```json
+{
+  "schemaVersion": 1,
+  "update": {
+    "enabled": true,
+    "uncSource": "\\\\fileserver\\tools\\shx-tools\\releases",
+    "httpsSource": "https://tools.example.com/shx-tools/releases",
+    "checkTiming": "startup",
+    "allowSelfSignedCert": false,
+    "locked": false
+  },
+  "limits": { "globalTasks": 2, "perToolTasks": 1 },
+  "ui": {
+    "lastRoute": "#/tools/image-collector",
+    "sidebarCollapsed": false,
+    "window": { "width": 1280, "height": 840, "maximized": false }
+  }
+}
+```
+
+| 段 | 谁写 | 说明 |
+|---|---|---|
+| `update.*` | 设置页 | 字段语义与校验规则见《打包、分发与自动更新》第 2 章；`locked` 由安装包注入后只读 |
+| `limits.*` | 设置页 | 上下限见 12.1；越界时夹取到边界并记一条警告，不拒绝保存 |
+| `ui.*` | 主进程（窗口/路由/侧栏） | 界面自己写，不经用户；`window` 恢复时若超出显示器边界则夹取并居中 |
+
+**构建期注入**：`build-config.json` 随安装包携带默认更新源。首次启动合并进用户 `config.json`，之后不再覆盖——升级安装包不能重置用户改过的源。
 
 **任务记录结构**
 
@@ -650,6 +684,53 @@ interface TaskRecord {
 
 **重启后怎么恢复**：启动时列 `tasks/*.json` → 非终态补 `interrupted` → 任务中心直接读目录渲染，**不另建索引文件**（200 条量级，一次 `readdir` + 200 次小读在 SSD 上是毫秒级）。
 
+**参数模板（`templates/<toolId>/<name>.json`）**
+
+模板是**扫描参数的命名快照**，一个模板一个文件，文件名即用户起的名字（非法字符替换为 `_`，重名覆盖前先确认）。
+
+```json
+{
+  "schemaVersion": 1,
+  "toolId": "image-collector",
+  "name": "6B-白班-明暗片",
+  "params": {
+    "entryPath": "\\\\10.108.9.153\\pl-6b",
+    "machines": [{ "code": "6B", "region": "东区" }],
+    "date": "2026-10-23",
+    "shift": "白班",
+    "hourSlots": ["08", "09", "10"],
+    "defects": ["明暗片"],
+    "extensions": ["jpg", "png", "bmp"],
+    "dedupe": false
+  },
+  "createdAt": "2026-10-24T09:12:00+08:00",
+  "updatedAt": "2026-10-24T09:12:00+08:00"
+}
+```
+
+| 项 | 规则 |
+|---|---|
+| 存什么 | **只存扫描参数**，不存复制参数（目标目录、冲突策略每次重选）。理由见需求 D19 |
+| 不存什么 | 任务记录里的 `sourceScanId`、进度、结果一概不存——模板是可反复用的输入，不是历史 |
+| 名字 | 同一 `toolId` 下唯一；上限 64 字符；大小写敏感（NTFS 上两个只差大小写的名字会互相覆盖，保存时提示） |
+| 上限 | 每个工具 50 个；超出时提示先删 |
+| 导入 / 导出 | 导出即把这份 JSON 另存到用户选的位置；导入做 zod 校验 + `schemaVersion` 迁移，`toolId` 不匹配直接拒绝 |
+| 载入 | 只回填控件，**不自动开跑**；载入后用户仍可改任意字段 |
+
+**`schemaVersion` 与版本迁移**
+
+三处存储都带 `schemaVersion`：任务记录、模板、`categories.json`。读取规则统一：
+
+| 场景 | 处理 |
+|---|---|
+| 版本 = 当前 | 正常读 |
+| 版本 < 当前 | 按迁移函数逐级升版（`migrate[v]`），升完在内存里用，**下次写入时才落盘**——只读查看不应改动历史记录 |
+| 版本 > 当前 | 只读模式：能展示的字段照常展示，**不允许写回**，并在界面标注「由更新版本产生」 |
+| 迁移函数缺失 | 视为损坏：备份为 `.corrupt-<时间戳>`，按默认值重建，界面提示一次 |
+| 字段缺失 | 迁移时补默认值，**不猜语义**（例如旧记录没有 `resumable`，按 `state` 推导） |
+
+目前只有 v1，迁移表为空；加字段时必须同时加一条 `migrate[]` 与一个 fixture，否则按上表第 4 行处理。
+
 **目录明细（`<taskId>.dirs.jsonl`）**
 
 `TaskRecord` 里只有汇总与失败清单，装不下"每个目录扫到了什么"。F1 的六状态明细单独落一个 JSONL 文件，一行一个目录：
@@ -666,7 +747,7 @@ interface TaskRecord {
 | 读取 | 详情页按 `offset/limit` 分页读，不把整个文件载入渲染进程 |
 | 清理 | **只保留最近 50 个扫描任务**的明细；运行中的任务不删；被复制任务引用的扫描不删（见上表「引用保护」） |
 | 缺失容忍 | 文件不存在时详情页显示「明细已清理，只能看汇总」，不报错、不重试 |
-| 体积 | 2 万行约 3 MB（绝对路径）；50 条命中上限时约占 150 MB |
+| 体积 | 2 万行约 3 MB（绝对路径）；50 个任务命中上限时约占 150 MB |
 
 > 为什么不塞进 `<taskId>.json`：明细是追加写的高频数据，混进汇总文件会让"每 2 秒原子重写"的成本随扫描行数线性增长。分成两个文件后，汇总写起来仍是常数开销。
 
@@ -717,9 +798,9 @@ export interface TaskError {
 }
 ```
 
-错误码按域分段（`E_PARAM_*` / `E_FS_*` / `E_NET_*` / `E_LNK_*` / `E_WORKER_*`），便于日志检索与统计。**UI 只展示 `message`**，`detail` 折叠在"技术详情"里——让非技术同事看到 `EBUSY: resource busy or locked` 没有意义。
+错误码按域分段（`E_PARAM_*` / `E_FS_*` / `E_NET_*` / `E_LNK_*` / `E_WORKER_*` / `E_TEMPLATE_*`），便于日志检索与统计。**UI 只展示 `message`**，`detail` 折叠在"技术详情"里——让非技术同事看到 `EBUSY: resource busy or locked` 没有意义。
 
-**标准错误码与映射**
+**这张表是错误码的唯一权威**。F1 的「六状态 → 错误码」与 UI 的「错误 → 文案」都只是映射，新增错误码只改这里。
 
 | 错误域 | 错误码 (`code`) | 默认用户文案 (`message`) | 可重试 |
 |---|---|---|---|
@@ -734,9 +815,15 @@ export interface TaskError {
 | | `E_NET_DENIED` | 网络共享拒绝访问（缺少网络凭据），可通过资源管理器认证 | 否 |
 | **快捷方式** | `E_LNK_BROKEN` | 快捷方式文件损坏或无效 | 否 |
 | | `E_LNK_CONFLICT` | 快捷方式目标主机存在歧义，需人工确认 | 否 |
+| **模板** | `E_TEMPLATE_NAME_TAKEN` | 已有同名模板 | 否（换名或确认覆盖） |
+| | `E_TEMPLATE_TOOL_MISMATCH` | 这个模板不属于当前工具 | 否 |
+| | `E_TEMPLATE_INVALID` | 模板文件已损坏或版本不兼容 | 否 |
 | **Worker生命周期** | `E_WORKER_CRASH` | 执行进程异常崩溃，可重新发起 | 是 |
 | | `E_WORKER_TIMEOUT` | 执行进程无响应（假死） | 是 |
 | | `E_WORKER_DATA_LOSS` | 明细批次与汇总对账不一致（重发后仍缺行） | 是 |
+| **兜底** | `E_UNKNOWN` | 出现未归类的错误，详情见日志 | 否 |
+
+**`E_UNKNOWN` 是兜底而非分类**：`normalizeSystemError` 认不出的异常一律归到这里，并强制带上原始 `code` 与堆栈。它的数量是"错误码表需要补条目"的计数器，不是正常状态。
 
 系统底层异常必须在基础设施层通过 `normalizeSystemError(err)` 转为统一 `TaskError` 后再向上传递。
 
@@ -746,13 +833,15 @@ export interface TaskError {
 
 | 资源 | 限制 | 依据 |
 |---|---|---|
-| 全局并发任务 | 2 | 超过后互相拖慢磁盘与网络，收益为负 |
-| 单工具并发任务 | 1（**不区分 kind**） | 同一工具的 scan 与 copy 也不许并行：copy 依赖 scan 的清单，且两者抢同一条 UNC 链路 |
+| 全局并发任务 | 默认 2，可配 1~4（`config.json` 的 `limits.globalTasks`） | 默认为 2；配置上限 4，再高只会让磁盘与网络互相拖慢。UI 的 Slider 范围必须与这里的上下限一致 |
+| 单工具并发任务 | 默认 1，可配 1~2（`limits.perToolTasks`），**不区分 kind** | 同一工具的 scan 与 copy 也不许并行：copy 依赖 scan 的清单，且两者抢同一条 UNC 链路 |
 | 同一扫描的并发复制 | 1 | 两个复制任务写同一个目标目录会互相覆盖；`TaskManager` 按 `sourceScanId` 去重 |
 | 暂停的任务 | 不占名额 | 暂停即 kill，没有 worker、不碰磁盘与网络；占着闸门会让「暂停」变成阻塞别人的手段。但 `sourceScanId` 锁**保留到终态**，否则暂停的复制和新建的复制会写同一个目标 |
 | 目录遍历并发 | 本地 8 / UNC 4 | UNC 并发过高反而更慢，且会压垮共享 |
 | 文件复制并发 | 本地 8 / UNC 4 | 与遍历共用一个并发池，避免总量失控 |
 | 单文件读取 | 流式，逐行处理 | 内存占用与文件行数解耦 |
+
+**并发是配置项，不是常量**：`TaskManager` 与 `pool.ts` 都从 `config.json` 读上下限，保存即重建闸门；改小不影响已在跑的任务，改大只影响下一次派发。UI 设置页的 Slider 范围（1~4 / 1~2）必须与本表一致——两处写死不同的数是最常见的"配了没生效"。
 
 并发池用 `infra/limit.ts` 实现（信号量 + 队列），不引入第三方依赖——需求太简单，一个 40 行的类足够，且便于加"取消时清空队列"。
 
@@ -801,50 +890,15 @@ Windows 原生 SMB 客户端在遇到离线或断网的目标 IP 时，系统内
 
 ### 12.5 断点续传（Resume）
 
-**扫描：日志即进度，不需要额外状态。**
+续传的**行为规则**（认领条件、可复现命名、四条不变量）写在《F1 图片收集设计》§4.6，本节只记架构侧的两条约定，避免两处维护同一张表。
 
-```
-剩余单元 = 全量 ScanUnit − dirs.jsonl 中已出现的 path 集合
-```
-
-`dirs.jsonl` 每行带 `path`，与序号无关，所以并发导致的乱序不影响判定。20,000 行约 3 MB，重建集合是毫秒级。已扫目录的 `hash` 与文件清单已在 `files.jsonl` 里，**不重算**。
-
-**复制：`copy.jsonl` 是唯一账本。**
-
-```json
-{"seq":1,"index":3216,"status":"copied","dest":"2026-10-23\\东区\\6B\\明暗片\\13\\A\\IMG_0142.jpg","bytes":1048576}
-```
-
-| 项 | 规则 |
+| 约定 | 内容 |
 |---|---|
-| 写入 | 每项一行，`status` ∈ `copied` / `skipped` / `failed` / `adopted`；按 200 行或 200 ms 一批追加并 `fsync` |
-| 记账顺序 | 先写完目标文件（含 rename），再记这一行。中间被 kill 的那几项就是"未记账但在盘上"的 |
-| 生命周期 | 只在 `paused` / `interrupted` 期间存在；进 `succeeded` / `failed` / `canceled` 立即删除 |
-| 体积 | 上限 10 万行、约 15 MB，且只在一份任务暂停时占用 |
+| 日志即检查点 | 扫描用 `dirs.jsonl`（按 `path` 求差），复制用 `copy.jsonl`（按 `index` 跳过已记账项）。不额外维护 checkpoint 文件——两份日志本来就是明细，多一份状态就多一个可能对不上的东西 |
+| 恢复只读日志 | `resume: true` 时 worker 先读 `taskDir` 下的日志算出已完成集，再派发剩余工作；日志由主进程写，worker 只读 |
+| 空间预检 | 恢复时只按**剩余**字节比对，不是全量 |
 
-**未记账项怎么判定**（恢复时唯一需要动脑的地方）：
-
-| 冲突策略 | 目标已存在的情况 | 处理 |
-|---|---|---|
-| `skip` | 存在 | 按原语义记 `skipped`（本来就幂等，不需要认领） |
-| `overwrite` | 存在、`size` 与源一致、且 `mtime ≥ 本轮 startedAt` | 认领为 `adopted`，不重写 |
-| `overwrite` | 其他 | 重做——覆盖是幂等的 |
-| `rename` | 目标名由下面的规则算出，存在且 `size` 一致 | 认领为 `adopted` |
-| `rename` | 其他 | 重做 |
-
-`mtime ≥ startedAt` 是必需的：产线上同尺寸图片极常见，只比 `size` 会把"任务开始前就存在的同名文件"误认成自己写的，`overwrite` 就会漏覆盖。
-
-**重命名必须可复现**：`rename` 策略下，同名冲突时不用「下一个空闲号」，而用**项序号**——`IMG_0142_0017.jpg`（4 位补零，超过 9999 自然变 5 位）。这样恢复时能算出同一个名字，看见它就认领，不会因为"上次已经写成 `_1`"再生成一份 `_2` 副本。文件名里带序号是可续传的代价，也是它的前提。
-
-**恢复后的不变量**（必须写进测试）：
-
-| 不变量 | 含义 |
-|---|---|
-| 单调 | 恢复后的 `done` 从上次的值接着涨，进度条不回退 |
-| 不重写 | 已记账的项不会被写第二次 |
-| 不丢项 | 终态时 `copied + skipped + failed + adopted === planned` |
-| 无残留 | 结束时目标目录中 `.shx-part` 数量为 0 |
-| 空间 | 恢复时的空间预检只按**剩余**字节比对，不是全量 |
+> 认领规则（`skip` / `overwrite` / `rename` 各怎么判）、`mtime ≥ startedAt` 的必要性、可复现命名与四条不变量：见 F1 §4.6。
 
 ---
 
@@ -863,7 +917,7 @@ Windows 原生 SMB 客户端在遇到离线或断网的目标 IP 时，系统内
 | Schema 校验 | zod | 主进程入参校验 + 配置校验 |
 | 日志 | electron-log | 开箱即用，支持文件滚动 |
 | 打包 | electron-builder 26 | NSIS + ZIP 双目标 |
-| 更新 | electron-updater（仅安装版）+ 自研（免安装版） | 见《需求与方案设计》4.3 |
+| 更新 | electron-updater（仅安装版）+ 自研（免安装版） | 见《打包、分发与自动更新》 |
 | 测试 | Vitest + Playwright(Electron) | 纯逻辑单测 + 关键路径冒烟 |
 
 ---
@@ -1296,6 +1350,8 @@ npm create @quick-start/electron@latest shx-tools -- --template react-ts
 | 状态谁写 | 仅主进程 `TaskManager` | 单点写避免 UI 与磁盘不一致 |
 | 任务怎么切 | **扫描任务 / 复制任务两类**，清单落盘传递 | 副作用不同、失败归因不同、清单可复用；`preview/confirm` 三个概念随之删除 |
 | 任务能否中断 | 暂停 / 继续 / 取消 / 断点续传；取消不可续 | 暂停 = kill + 磁盘日志，恢复跳过已完成项；取消若也能续，两个概念就合并了 |
+| 并发上限 | 默认 2 / 1，可配 1~4 / 1~2 | 写死会让设置页的 Slider 变成摆设；不设上限又会互相拖慢 |
+| 配置与错误码 | `config.json` 与错误码表各只有一份权威 | 两处维护同一字段/同一码，必然漂移 |
 | 业务层能否碰 electron | 不能 | 脱离桌面环境可单测 |
 | 任务记录存哪 | JSON 文件 + 原子写 | 200 条量级，零原生依赖 |
 | 并发上限 | 全局 2 / 单工具 1（不分 kind） | 超过后互相拖慢，收益为负 |
