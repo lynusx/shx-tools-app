@@ -1,8 +1,10 @@
 # shx-tools 架构设计与技术栈
 
-> 版本：v0.8 ｜ 日期：2026-10-27
+> 版本：v0.9 ｜ 日期：2026-10-27
 > 上游文档：《shx-tools 需求与方案设计（总览）》
 > 关联文档：《shx-tools F1 图片收集设计》《shx-tools 打包、分发与自动更新》
+>
+> **v0.9**：依赖基线同步——TypeScript 6.0、Ant Design 6.6.8；`paths` 去掉 `baseUrl` 改为相对写法；补 ESLint 9 的版本约束说明。
 >
 > **v0.8**：包管理器定为 pnpm 12（需求 D20）；补 `pnpm-workspace.yaml` 的安装脚本白名单，第 13、15 章命令同步改为 pnpm。
 >
@@ -911,8 +913,8 @@ Windows 原生 SMB 客户端在遇到离线或断网的目标 IP 时，系统内
 | 运行时 | **Electron 44.9.x**（已定） | 8 月发布、已出 9 个补丁，行为稳定；EOL 2027-03。45 于 2026-10-21 才发布，1~2 个月后再评估升级 |
 | 构建 | Vite 8 + electron-vite | 三端统一，HMR 体验好 |
 | 包管理 | **pnpm 12** | 版本由 `packageManager` 锁定，只提交 `pnpm-lock.yaml`；安装脚本在 `pnpm-workspace.yaml` 的 `allowBuilds` 中白名单放行（D20） |
-| UI | React 19 + Ant Design 6.6.7 | antd 6.6.7，采用 CSS 变量主题，体积与切换性能优于 v5 |
-| 语言 | TypeScript 5.x（strict） | 主/渲染/worker 共享类型 |
+| UI | React 19 + Ant Design 6.6.8 | antd 6.6.8，采用 CSS 变量主题，体积与切换性能优于 v5 |
+| 语言 | TypeScript 6.x（strict） | 主/渲染/worker 共享类型；TS 6 起 `paths` 必须写相对路径，不再需要 `baseUrl` |
 | 状态 | Zustand | 轻量，任务进度这类高频更新不需要 Redux |
 | 路由 | React Router 7（Hash 模式） | 打包后 `file://` 加载必须用 hash |
 | 表格 | antd Table（虚拟滚动） | 目录 / 任务 / 明细一律开 `virtual`；9,000 行不截断、不做分页器（需求 D13） |
@@ -922,6 +924,8 @@ Windows 原生 SMB 客户端在遇到离线或断网的目标 IP 时，系统内
 | 打包 | electron-builder 26 | NSIS + ZIP 双目标 |
 | 更新 | electron-updater（仅安装版）+ 自研（免安装版） | 见《打包、分发与自动更新》 |
 | 测试 | Vitest + Playwright(Electron) | 纯逻辑单测 + 关键路径冒烟 |
+
+**版本约束**：ESLint 固定在 **9.x**。`eslint-plugin-react@7.37` 尚不支持 ESLint 10（加载规则即崩溃），而它是 `react/*` 规则的唯一来源；升级 ESLint 前先确认该插件已支持。`@eslint/js@10` 因此会留一条上游 peer 警告，属已知噪音，不影响 lint。
 
 ---
 
@@ -1073,7 +1077,7 @@ shx-tools/
 ├─ tsconfig.json
 ├─ tsconfig.node.json
 ├─ tsconfig.web.json
-├─ eslint.config.js
+├─ eslint.config.mjs
 └─ package.json
 ```
 
@@ -1094,7 +1098,7 @@ shx-tools/
 
 ### 14.3 依赖规则的落地
 
-规则写在文档里没用，必须让构建失败。`eslint.config.js` 关键片段：
+规则写在文档里没用，必须让构建失败。`eslint.config.mjs` 关键片段：
 
 ```js
 export default [

@@ -1,9 +1,11 @@
 # shx-tools UI 设计规范
 
-> 版本：v1.6 ｜ 日期：2026-10-25
+> 版本：v1.7 ｜ 日期：2026-10-27
 > 上游文档：《shx-tools 需求与方案设计（总览）》
 > 关联文档：《shx-tools 架构设计与技术栈》《shx-tools F1 图片收集设计》《shx-tools 打包、分发与自动更新》
-> 实现基线：Electron 44.9.x · React 19 · Ant Design 6.6.7 · TypeScript 5 strict
+> 实现基线：Electron 44.9.x · React 19 · Ant Design 6.6.8 · TypeScript 6 strict
+>
+> **v1.7**：实现基线同步到 Ant Design 6.6.8、TypeScript 6（2026-10-27）。
 >
 > **v1.6**：新增模板条（4.2.8）；附录 C 的引用与状态数随架构/F1 更新修正；并发控件与架构 12.1 对齐。
 >

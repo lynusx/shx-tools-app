@@ -1,6 +1,6 @@
 # shx-tools 需求与方案设计（总览）
 
-> 版本：v1.6（2026-10-27；包管理器定为 pnpm 12，锁定 `pnpm-lock.yaml`，见 D20） ｜ 日期：2026-10-25 ｜ 状态：方案已细化，待移交实现
+> 版本：v1.7（2026-10-27；依赖基线同步到 TypeScript 6.0 / Ant Design 6.6.8；包管理器定为 pnpm 12，见 D20） ｜ 日期：2026-10-25 ｜ 状态：方案已细化，待移交实现
 
 ---
 
@@ -242,10 +242,10 @@ new BrowserWindow({
 | 层    | 选择                                                                 |
 | ---- | ------------------------------------------------------------------ |
 | 运行时  | Electron 44.9.x（Chromium 152 / Node 24），生产仅 Windows x64，开发兼顾 macOS |
-| 前端   | React 19 + Ant Design 6.6.7 + React Router 7（Hash）+ Zustand        |
+| 前端   | React 19 + Ant Design 6.6.8 + React Router 7（Hash）+ Zustand        |
 | 构建   | Vite 8 + electron-vite；main/preload 输出 CJS，renderer ESM            |
 | 包管理  | pnpm 12（`packageManager` 锁版本，提交 `pnpm-lock.yaml`；安装脚本白名单放行，见 D20） |
-| 语言   | TypeScript 5.x（strict）                                             |
+| 语言   | TypeScript 6.x（strict）                                             |
 | 数据处理 | image-size（读文件头取尺寸）、zod（校验）                                        |
 | 打包   | electron-builder 26：NSIS + ZIP 双目标                                 |
 | 测试   | Vitest（单元/集成）+ Playwright（冒烟）                                      |
