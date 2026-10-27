@@ -14,6 +14,12 @@ import { registerAppChannels } from './ipc/app.channel'
 import { registerTaskChannels } from './ipc/task.channel'
 import { registerToolChannels } from './ipc/tool.channel'
 
+// smoke 使用独立的 userData：必须在单实例锁之前设置，否则会和正在运行的 dev 实例抢锁
+const smokeMode = process.argv.includes('--smoke') || process.env['SHX_SMOKE'] === '1'
+if (smokeMode) {
+  app.setPath('userData', join(tmpdir(), `shx-tools-smoke-${process.pid}`))
+}
+
 const gotLock = app.requestSingleInstanceLock()
 if (!gotLock) {
   app.quit()
@@ -68,11 +74,6 @@ async function bootstrap(): Promise<void> {
     if (win.isMinimized()) win.restore()
     win.focus()
   })
-}
-
-const smokeMode = process.argv.includes('--smoke') || process.env['SHX_SMOKE'] === '1'
-if (smokeMode) {
-  app.setPath('userData', join(tmpdir(), `shx-tools-smoke-${process.pid}`))
 }
 
 void app.whenReady().then(async () => {
