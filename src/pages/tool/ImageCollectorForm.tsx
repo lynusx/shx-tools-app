@@ -125,7 +125,7 @@ export default function ImageCollectorForm({ busy, onStart }: Props): JSX.Elemen
   }
 
   return (
-    <Form layout="vertical" style={{ marginTop: 8 }}>
+    <Form layout="vertical">
       {error ? (
         <Alert
           type="error"

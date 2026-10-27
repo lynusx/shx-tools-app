@@ -2,6 +2,25 @@
   box-sizing: border-box;
 }
 
+:root {
+  /* 右侧面板（文档 §7.3）：页面 24、卡片内 20、卡片间 16、区块内 16、表单项 20 */
+  --panel-padding: 24px;
+  --panel-gap: 16px;
+  --card-padding: 20px;
+  --form-item-gap: 20px;
+
+  /* 侧边栏（文档 §4.1.1）：行间 4、图文 8、两侧与行内 12、组间 16 */
+  --nav-padding-x: 12px;
+  --nav-item-padding-x: 12px;
+  --nav-item-height: 40px;
+  --nav-item-gap: 4px;
+  --nav-group-gap: 16px;
+  --nav-radius: 8px;
+  --nav-icon-size: 13px;
+  --nav-icon-gap: 8px;
+  --nav-font-size: 14px;
+}
+
 html,
 body,
 #root {
@@ -19,32 +38,29 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 24px;
+  padding: 0 var(--panel-padding);
   background: #fff;
   border-bottom: 1px solid #f0f0f0;
 }
 
 .page {
-  padding: 24px;
+  padding: var(--panel-padding);
   max-width: 1100px;
   margin: 0 auto;
 }
 
-/*
- * 侧边栏统一间距规则（基数 4：4 / 8 / 12 / 16 / 24）：
- * 行间 4、图文 8、两侧与行内 12、组间 16；字号 14 / 16 / 12；
- * 圆角 8 与内容区 Card 对齐；图标 13，略小于正文。
- */
-:root {
-  --nav-padding-x: 12px;
-  --nav-item-padding-x: 12px;
-  --nav-item-height: 40px;
-  --nav-item-gap: 4px;
-  --nav-group-gap: 16px;
-  --nav-radius: 8px;
-  --nav-icon-size: 13px;
-  --nav-icon-gap: 8px;
-  --nav-font-size: 14px;
+/* 卡片统一内边距，标题与内容左边缘对齐 */
+.page .ant-card .ant-card-body {
+  padding: var(--card-padding);
+}
+
+.page .ant-card .ant-card-head {
+  padding-inline: var(--card-padding);
+}
+
+/* 表单纵向间距统一到 20，避免 antd 默认 24 与卡片节奏打架 */
+.page .ant-form-vertical .ant-form-item {
+  margin-bottom: var(--form-item-gap);
 }
 
 .app-sider .ant-layout-sider-children {

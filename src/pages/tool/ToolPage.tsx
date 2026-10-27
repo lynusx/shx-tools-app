@@ -216,7 +216,7 @@ function TaskCard({ title, task, event, footer }: TaskCardProps): JSX.Element {
         </Space>
       }
     >
-      <Space direction="vertical" size={12} style={{ width: '100%' }}>
+      <Space direction="vertical" size={16} style={{ width: '100%' }}>
         <Progress percent={percent} status={task.state === 'failed' ? 'exception' : undefined} />
         <Typography.Text type="secondary">
           已处理 {done} / {total}
@@ -252,7 +252,7 @@ function SummaryView({ task }: { task: TaskRecord }): JSX.Element {
   if (task.kind === 'scan') {
     const summary = task.summary as ScanSummary
     return (
-      <Space size={32}>
+      <Space size={24}>
         <Statistic title="目录" value={summary.dirCount ?? 0} />
         <Statistic title="文件" value={summary.fileCount ?? 0} />
         <Statistic title="字节" value={summary.bytes ?? 0} />
@@ -262,7 +262,7 @@ function SummaryView({ task }: { task: TaskRecord }): JSX.Element {
 
   const summary = task.summary as CopySummary
   return (
-    <Space size={32}>
+    <Space size={24}>
       <Statistic title="计划" value={summary.planned?.fileCount ?? 0} />
       <Statistic title="已复制" value={summary.copied?.fileCount ?? 0} />
       <Statistic title="失败" value={summary.failed?.fileCount ?? 0} />
