@@ -91,9 +91,8 @@ export interface ProgressEvent {
 /**
  * 工具执行期上下文：只暴露必要能力，不给 electron / IPC。
  *
- * 相对《架构》第 6 章的契约，M0 补了三个字段：`taskId`、`sourceTaskDir`、`resumeFrom`。
- * 原文只说「worker 启动后先读 taskDir 下的日志算出已完成集」，没规定怎么交给执行器；
- * 没有这三个字段，执行器既定位不到自己的明细文件，也拿不到源扫描的清单。
+ * `taskId` / `sourceTaskDir` / `resumeFrom` 为 M0 实施时补充，已回写《架构》v0.10 第 6 章：
+ * 执行器需要它们定位自己的明细与源扫描清单，并知道续传起点。
  */
 export interface ToolContext {
   report(p: ProgressEvent): void

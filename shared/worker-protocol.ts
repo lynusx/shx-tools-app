@@ -20,10 +20,10 @@ export interface CopyCommand {
   sourceScanId: string
   /**
    * 源扫描的明细目录。M0 约定：明细统一放在 tasks 根目录、按 taskId 命名，
-   * 因此这里与 taskDir 相同；协议原文未列该字段，属于实现补充。
+   * 因此这里与 taskDir 相同；已回写《架构》v0.10 第 8 章。
    */
   sourceTaskDir?: string
-  /** 续传起点：主进程按上次进度写进命令（协议原文只规定了 scan 从日志重建） */
+  /** 续传起点：copy 跨任务边界，由主进程按上次进度传入（已回写《架构》v0.10 第 8 章） */
   resumeFrom?: number
   resume: boolean
 }

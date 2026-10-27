@@ -1,8 +1,10 @@
 # shx-tools 架构设计与技术栈
 
-> 版本：v0.9 ｜ 日期：2026-10-27
+> 版本：v0.10 ｜ 日期：2026-10-27
 > 上游文档：《shx-tools 需求与方案设计（总览）》
 > 关联文档：《shx-tools F1 图片收集设计》《shx-tools 打包、分发与自动更新》
+>
+> **v0.10**：回写 M0 契约偏差——`ToolContext` 增 `taskId` / `sourceTaskDir` / `resumeFrom`；`copy` 命令增 `sourceScanId` / `sourceTaskDir` / `resumeFrom`；`asarUnpack` 补 `out/main/chunks/**`。
 >
 > **v0.9**：依赖基线同步——TypeScript 6.0、Ant Design 6.6.8；`paths` 去掉 `baseUrl` 改为相对写法；补 ESLint 9 的版本约束说明。
 >
@@ -208,7 +210,10 @@ export interface ToolContext {
   report(p: { done: number; total: number; phase: TaskPhase; message?: string; metrics?: Record<string, number | string> }): void;
   log(level: 'debug' | 'info' | 'warn' | 'error', message: string, meta?: unknown): void;
   signal: AbortSignal;           // 取消信号，执行器必须定期检查
-  tempDir: string;
+  taskId: string;                // 任务标识；明细文件按 taskId 命名
+  tempDir: string;               // 任务级目录（M0 实现 = tasks 根目录）
+  sourceTaskDir?: string;        // 仅 copy：源扫描明细所在目录
+  resumeFrom?: number;           // 续传起点：scan 为目录数，copy 为文件数
 }
 
 /** 仅 scan 任务可用：逐条追加明细，由主进程批量落盘（不回到内存、不走 IPC 单条往返） */
@@ -390,7 +395,7 @@ params → 渲染模板 → 展开 → [目录₁, 目录₂, …, 目录ₙ]
 
 type MainToWorker =
   | { taskId: string; type: 'scan'; toolId: string; params: ScanParams; taskDir: string; resume: boolean }
-  | { taskId: string; type: 'copy'; toolId: string; params: CopyParams; taskDir: string; resume: boolean }
+  | { taskId: string; type: 'copy'; toolId: string; params: CopyParams; taskDir: string; sourceScanId: string; sourceTaskDir?: string; resumeFrom?: number; resume: boolean }
   | { taskId: string; type: 'cancel' }
   | { taskId: string; type: 'resend'; stream: 'dirs' | 'files'; fromSeq: number }
   | { taskId: string; type: 'ping' };
@@ -404,6 +409,8 @@ type WorkerToMain =
   | { taskId: string; type: 'error'; code: string; message: string; stack?: string }
   | { taskId: string; type: 'pong' };
 ```
+
+**M0 回写（v0.10）**：`copy` 命令额外携带 `sourceScanId`、`sourceTaskDir`、`resumeFrom`。原文只说「worker 读日志算出已完成集」，没规定怎么把源扫描位置与续传起点交给执行器：`sourceTaskDir` 让 worker 定位源清单，`resumeFrom` 由主进程按上次进度传入（scan 仍从日志重建，copy 要跨任务边界）。`ToolContext` 同步暴露这三个字段。
 
 | 约束 | 说明 |
 |---|---|
@@ -1236,6 +1243,7 @@ files:
 asar: true
 asarUnpack:
   - out/main/worker.js        # utilityProcess 需要磁盘真实路径
+  - out/main/chunks/**        # worker 与 main 共享的错误码 chunk 会被拆到这里
 
 win:
   icon: build/icon.ico
@@ -1265,7 +1273,7 @@ publish:
 | `publish.url` 必须存在 | electron-builder 没有 publish 配置时**不会生成 `latest.yml`**，更新链路直接断掉。但运行时并不用它——feed 地址由 config.json 决定，这里的 URL 只是占位 |
 | `perMachine: false` | 装到 `%LOCALAPPDATA%`，免管理员权限。代价是每用户一份，机器上有多个账号会重复安装 |
 | 不配 `certificateFile` | 已确认无签名证书。构建时会警告，属预期 |
-| `asarUnpack` 只放 worker | 其余全部进 asar，减少文件数、加快启动 |
+| `asarUnpack` 放 worker 与 chunks | `worker.js` 必须解包；Rollup 把 worker 与 main 共享的错误码拆成 chunk 时，`out/main/chunks/**` 也要解包，否则打包态 fork 会因找不到模块失败。其余全部进 asar，减少文件数、加快启动 |
 | macOS 产物 | 仅本地开发调试用，不产出 dmg（无签名无公证，分发无意义） |
 
 ### 14.6 编码约定

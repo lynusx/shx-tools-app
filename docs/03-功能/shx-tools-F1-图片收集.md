@@ -653,7 +653,7 @@ EL 的共享通过 Windows「添加一个网络位置」接入（资源管理器
 ```ts
 interface ParsedLnk {
   target: string | null;              // 机台根（按 2.8.4 的优先级解析出的结果）
-  targetSource: 'linkInfo' | 'envVar' | 'propStore';
+  targetSource: 'linkInfo' | 'envVar' | 'propStore' | null; // 解析失败时为 null
   conflict: boolean;                  // 强来源互斥：EnvVar 的 U≠A，或 LinkInfo≠EnvVar
   conflictCandidates: string[];       // 冲突时的候选路径（给 UI 点选）
   propertyStoreMismatch?: string;     // PropertyStore 与采纳值不同：仅告警，不阻断
