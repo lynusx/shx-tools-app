@@ -24,6 +24,22 @@ pnpm smoke       # 无窗口跑通整条任务链路，退出码即结果
 pnpm smoke -- --no-sandbox --disable-gpu
 ```
 
+首次启动时，`predev` 会自动下载 Electron 二进制。
+
+如果自动下载失败，可手动执行：
+
+```bash
+pnpm exec install-electron
+```
+
+Windows PowerShell 下需要使用镜像时：
+
+```powershell
+$env:ELECTRON_MIRROR="https://npmmirror.com/mirrors/electron/"
+pnpm exec install-electron
+pnpm dev
+```
+
 ## M0 现在有什么
 
 | 模块 | 落点 | 状态 |

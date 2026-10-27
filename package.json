@@ -8,7 +8,9 @@
   "private": true,
   "packageManager": "pnpm@12.15.0",
   "scripts": {
+    "predev": "install-electron",
     "dev": "electron-vite dev",
+    "prestart": "install-electron",
     "start": "electron-vite preview",
     "build": "pnpm typecheck && electron-vite build",
     "build:unpack": "pnpm build && electron-builder --dir",
