@@ -24,6 +24,8 @@ export interface MachineTarget {
   code: string
   /** 机台根，逐台不同；形态 A 来自 .lnk，形态 B 由入口 + 目录名拼出 */
   root: string
+  /** 东区 / 西区；输出落点需要，形态 B 可由首字母推导 */
+  region?: string
 }
 
 export interface ExpandParams {
@@ -163,6 +165,7 @@ export function expandScanUnits(params: ExpandParams): ScanUnit[] {
             hour,
             defect
           }
+          if (machine.region) combo['region'] = machine.region
           if (subDir) combo['subDir'] = subDir
           if (grade) combo['grade'] = grade
 

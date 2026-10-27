@@ -100,6 +100,14 @@ describe('expandScanUnits：产品差异', () => {
     expect(() => expandScanUnits(withoutSubDir)).toThrow(ExpandError)
   })
 
+  it('机台区域写入 combo，供输出落点使用', () => {
+    const units = expandScanUnits({
+      ...lipoParams,
+      machines: [{ code: '6B', root: '\\\\10.108.9.153', region: '东区' }]
+    })
+    expect(units[0]?.combo['region']).toBe('东区')
+  })
+
   it('EL 机台名在根路径末尾，模板再拼 EL 段', () => {
     const units = expandScanUnits(elParams)
     expect(units).toHaveLength(4)
