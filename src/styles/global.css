@@ -29,3 +29,83 @@ body {
   max-width: 1100px;
   margin: 0 auto;
 }
+
+/*
+ * 侧边栏统一间距规则（4 的倍数）：
+ * 行内 2、行间 2、组间 12、侧栏留白 12；字号 14（正文）/ 16（品牌）/ 12（副标题）；
+ * 圆角 8 与内容区 Card 对齐；图标 13，略小于正文。
+ */
+:root {
+  --nav-padding-x: 12px;
+  --nav-item-padding-x: 12px;
+  --nav-item-height: 40px;
+  --nav-item-gap: 2px;
+  --nav-group-gap: 12px;
+  --nav-radius: 8px;
+  --nav-icon-size: 13px;
+  --nav-icon-gap: 10px;
+  --nav-font-size: 14px;
+}
+
+.app-sider .ant-layout-sider-children {
+  display: flex;
+  flex-direction: column;
+}
+
+.app-brand {
+  padding: 20px var(--nav-padding-x) 16px;
+}
+
+.app-brand-title.ant-typography {
+  margin: 0;
+  font-size: 16px;
+  line-height: 24px;
+}
+
+.app-brand-subtitle {
+  display: block;
+  margin-top: 2px;
+  font-size: 12px;
+  line-height: 20px;
+}
+
+.app-nav {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 var(--nav-padding-x);
+}
+
+.app-sider .app-nav .app-menu.ant-menu {
+  border-inline-end: 0;
+  background: transparent;
+  font-size: var(--nav-font-size);
+}
+
+.app-sider .app-nav .app-menu.ant-menu .ant-menu-item {
+  width: 100%;
+  height: var(--nav-item-height);
+  line-height: var(--nav-item-height);
+  margin: var(--nav-item-gap) 0;
+  padding-inline: var(--nav-item-padding-x);
+  border-radius: var(--nav-radius);
+}
+
+.app-sider .app-nav .app-menu.ant-menu .ant-menu-item .anticon {
+  font-size: var(--nav-icon-size);
+}
+
+.app-sider .app-nav .app-menu.ant-menu .ant-menu-item .anticon + .ant-menu-title-content {
+  margin-inline-start: var(--nav-icon-gap);
+}
+
+.app-sider .app-nav .app-menu.ant-menu .ant-menu-title-content {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.app-sider .app-nav .app-menu.ant-menu .ant-menu-item-divider {
+  margin: var(--nav-group-gap) 0;
+  border-color: #f0f0f0;
+}

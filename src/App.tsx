@@ -1,7 +1,8 @@
 import { useEffect, useState, type JSX } from 'react'
+import { AppstoreOutlined, UnorderedListOutlined } from '@ant-design/icons'
 import { Layout, Menu, Typography } from 'antd'
 import type { MenuProps } from 'antd'
-import { NavLink, Navigate, Route, Routes, useLocation } from 'react-router-dom'
+import { Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
 import type { ToolManifest } from '@shared/tool-contract'
 import TaskListPage from './pages/task/TaskListPage'
 import ToolPage from './pages/tool/ToolPage'
@@ -9,10 +10,13 @@ import { subscribeTaskEvents, useTaskStore } from './stores/task-store'
 
 const { Header, Sider, Content } = Layout
 
+const SIDER_WIDTH = 240
+
 export default function App(): JSX.Element {
   const [tools, setTools] = useState<ToolManifest[]>([])
   const [version, setVersion] = useState('')
   const location = useLocation()
+  const navigate = useNavigate()
 
   useEffect(() => {
     void window.shx.tool.list().then(setTools)
@@ -28,28 +32,46 @@ export default function App(): JSX.Element {
   const items: MenuProps['items'] = [
     ...tools.map((tool) => ({
       key: `tool:${tool.id}`,
-      label: <NavLink to={`/tools/${tool.id}`}>{tool.name}</NavLink>
+      icon: <AppstoreOutlined />,
+      label: tool.name
     })),
-    { key: 'tasks', label: <NavLink to="/tasks">任务中心</NavLink> }
+    { type: 'divider' as const, className: 'app-nav-divider' },
+    { key: 'tasks', icon: <UnorderedListOutlined />, label: '任务中心' }
   ]
+
+  const handleMenuClick: MenuProps['onClick'] = ({ key }) => {
+    if (key === 'tasks') {
+      navigate('/tasks')
+      return
+    }
+    navigate(`/tools/${key.slice('tool:'.length)}`)
+  }
 
   return (
     <Layout style={{ minHeight: '100vh' }}>
-      <Sider theme="light" width={208} style={{ borderRight: '1px solid #f0f0f0' }}>
-        <div style={{ padding: '20px 16px 12px' }}>
-          <Typography.Title level={4} style={{ margin: 0 }}>
+      <Sider
+        theme="light"
+        width={SIDER_WIDTH}
+        className="app-sider"
+        style={{ borderRight: '1px solid #f0f0f0' }}
+      >
+        <div className="app-brand">
+          <Typography.Title level={5} className="app-brand-title">
             shx-tools
           </Typography.Title>
-          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+          <Typography.Text type="secondary" className="app-brand-subtitle">
             内部自动化工具箱
           </Typography.Text>
         </div>
-        <Menu
-          mode="inline"
-          selectedKeys={[selectedKey]}
-          items={items}
-          style={{ borderInlineEnd: 'none' }}
-        />
+        <nav className="app-nav" aria-label="主导航">
+          <Menu
+            mode="inline"
+            selectedKeys={[selectedKey]}
+            items={items}
+            onClick={handleMenuClick}
+            className="app-menu"
+          />
+        </nav>
       </Sider>
       <Layout>
         <Header className="app-title" style={{ height: 48, lineHeight: '48px' }}>
