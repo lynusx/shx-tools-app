@@ -1,6 +1,6 @@
 # shx-tools 需求与方案设计（总览）
 
-> 版本：v1.5（2026-10-25；拆出《打包、分发与自动更新》，补齐模板设计，统一六态与并发口径） ｜ 日期：2026-10-25 ｜ 状态：方案已细化，待移交实现
+> 版本：v1.6（2026-10-27；包管理器定为 pnpm 12，锁定 `pnpm-lock.yaml`，见 D20） ｜ 日期：2026-10-25 ｜ 状态：方案已细化，待移交实现
 
 ---
 
@@ -244,6 +244,7 @@ new BrowserWindow({
 | 运行时  | Electron 44.9.x（Chromium 152 / Node 24），生产仅 Windows x64，开发兼顾 macOS |
 | 前端   | React 19 + Ant Design 6.6.7 + React Router 7（Hash）+ Zustand        |
 | 构建   | Vite 8 + electron-vite；main/preload 输出 CJS，renderer ESM            |
+| 包管理  | pnpm 12（`packageManager` 锁版本，提交 `pnpm-lock.yaml`；安装脚本白名单放行，见 D20） |
 | 语言   | TypeScript 5.x（strict）                                             |
 | 数据处理 | image-size（读文件头取尺寸）、zod（校验）                                        |
 | 打包   | electron-builder 26：NSIS + ZIP 双目标                                 |
@@ -307,6 +308,7 @@ new BrowserWindow({
 | D17 | 暂停 / 恢复 / 断点续传 | 扫描与复制都支持暂停、恢复、取消与断点续传；暂停 = 立即 kill + 磁盘日志，恢复跳过已完成项；**取消后不可继续**（要留后路用暂停）；崩溃/断电记为「已中断」且可继续，但**不自动续跑**，由人点「继续」 |
 | D18 | 复制不做移动 | 删除 `move` 模式：复制只写目标、源文件不动。删源不可逆，不该藏在可取消、可续传的任务里 |
 | D19 | 模板只存扫描参数，且内嵌在工具页 | 目标目录是环境相关的全局上次值、复制参数每次都要重选，存进模板只会让人误以为「载入就对了」。工具页顶部一个下拉即可，不占侧栏、不新增路由。否决：模板存全部参数（载入后目标目录是旧的）、独立模板页（多一层导航） |
+| D20 | 包管理器 | 统一用 **pnpm 12**：`packageManager` 锁定版本，只提交 `pnpm-lock.yaml`（删除 `package-lock.json`）；依赖安装脚本默认全禁，仅在 `pnpm-workspace.yaml` 的 `allowBuilds` 中放行 `electron-winstaller`。不用 npm / yarn，避免多份锁文件与依赖树漂移 |
 
 ### 8.2 仍待补充（不阻塞 M0）
 

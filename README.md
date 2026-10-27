@@ -7,19 +7,21 @@
 
 ## 快速开始
 
+包管理器统一用 **pnpm**（`packageManager` 锁定版本，建议先 `corepack enable`）；依赖只认 `pnpm-lock.yaml`，不要用 npm / yarn 重新生成锁文件。需要 Node.js ≥ 22.12。
+
 ```bash
-npm install
-npm run dev      # 开发态：Electron 窗口 + HMR
-npm test         # 单元测试（Vitest）
-npm run lint     # ESLint，含渲染进程 / 工具的依赖边界规则
-npm run build    # typecheck + main / preload / worker / renderer 构建
-npm run smoke    # 无窗口跑通整条任务链路，退出码即结果
+pnpm install     # 安装依赖（首次按 pnpm-workspace.yaml 的 allowBuilds 放行安装脚本）
+pnpm dev         # 开发态：Electron 窗口 + HMR
+pnpm test        # 单元测试（Vitest）
+pnpm lint        # ESLint，含渲染进程 / 工具的依赖边界规则
+pnpm build       # typecheck + main / preload / worker / renderer 构建
+pnpm smoke       # 无窗口跑通整条任务链路，退出码即结果
 ```
 
 在受限环境（CI、无桌面会话、沙箱）里 Electron 起不来时，追加 Chromium 开关：
 
 ```bash
-npm run smoke -- --no-sandbox --disable-gpu
+pnpm smoke -- --no-sandbox --disable-gpu
 ```
 
 ## M0 现在有什么
@@ -84,6 +86,6 @@ docs/                五份设计文档，按「需求 / 架构 / 功能 / UI / 
 
 ## 下一步
 
-1. **M0 收尾（Windows）**：`npm run build:win` → 装到干净机器 → 跑假任务 → 看报告；顺带确认 asar 解包后的 worker 能 fork。
+1. **M0 收尾（Windows）**：`pnpm build:win` → 装到干净机器 → 跑假任务 → 看报告；顺带确认 asar 解包后的 worker 能 fork。
 2. **M1**：`.lnk` 解析、路径模板、笛卡尔积扫描、前缀预检、真实复制与报告。
 3. 契约偏差回写文档，避免 M1 按旧契约实现。

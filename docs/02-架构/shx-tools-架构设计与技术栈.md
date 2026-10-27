@@ -1,8 +1,10 @@
 # shx-tools 架构设计与技术栈
 
-> 版本：v0.7 ｜ 日期：2026-10-25
+> 版本：v0.8 ｜ 日期：2026-10-27
 > 上游文档：《shx-tools 需求与方案设计（总览）》
 > 关联文档：《shx-tools F1 图片收集设计》《shx-tools 打包、分发与自动更新》
+>
+> **v0.8**：包管理器定为 pnpm 12（需求 D20）；补 `pnpm-workspace.yaml` 的安装脚本白名单，第 13、15 章命令同步改为 pnpm。
 >
 > **v0.7**：并发改为配置项（1~4 / 1~2）；`config.json` 补字段级 schema，模板记录与版本迁移写入第 10 章；错误码表补齐 `E_TEMPLATE_*` 与 `E_UNKNOWN` 并定为唯一权威；续传规则收敛到 F1（见 12.5）。
 >
@@ -908,6 +910,7 @@ Windows 原生 SMB 客户端在遇到离线或断网的目标 IP 时，系统内
 |---|---|---|
 | 运行时 | **Electron 44.9.x**（已定） | 8 月发布、已出 9 个补丁，行为稳定；EOL 2027-03。45 于 2026-10-21 才发布，1~2 个月后再评估升级 |
 | 构建 | Vite 8 + electron-vite | 三端统一，HMR 体验好 |
+| 包管理 | **pnpm 12** | 版本由 `packageManager` 锁定，只提交 `pnpm-lock.yaml`；安装脚本在 `pnpm-workspace.yaml` 的 `allowBuilds` 中白名单放行（D20） |
 | UI | React 19 + Ant Design 6.6.7 | antd 6.6.7，采用 CSS 变量主题，体积与切换性能优于 v5 |
 | 语言 | TypeScript 5.x（strict） | 主/渲染/worker 共享类型 |
 | 状态 | Zustand | 轻量，任务进度这类高频更新不需要 Redux |
@@ -1197,6 +1200,8 @@ export default defineConfig({
 | sourcemap | 生产关闭 | 减小包体；崩溃栈通过符号表离线还原 |
 | 版本号 | `define` 注入 | UI 显示版本，避免运行时读 package.json |
 
+**包管理器（D20）**：统一用 pnpm 12，版本由 `package.json` 的 `packageManager` 锁定；只提交 `pnpm-lock.yaml`，不提交 `package-lock.json`。`pnpm-workspace.yaml` 只承载 pnpm 配置（`allowBuilds` 白名单），不声明子包。Electron 44 起二进制改为首次运行时懒下载，因此需要放行的安装脚本只剩 electron-builder 依赖的 `electron-winstaller`。
+
 **worker 的打包坑与跨环境寻址**：
 `out/main/worker.js` 打包后会默认封入 asar，而 `utilityProcess.fork` 需要底层操作系统的真实文件路径，无法从 asar 内加载。
 * 解决方案：通过 `asarUnpack` 将其解包（见 14.5），并在 `electron/core/worker/worker-host.ts` 中统一封装跨环境定位函数：
@@ -1309,12 +1314,12 @@ CI       typecheck → lint → unit → integration → build（Windows + macOS
 **初始化方式（已定）**：用 `electron-vite` 官方脚手架生成，只取构建配置，示例代码全部删除。
 
 ```bash
-npm create @quick-start/electron@latest shx-tools -- --template react-ts
+pnpm create @quick-start/electron@latest shx-tools --template react-ts
 ```
 
 | 时段 | 任务 | 完成判据 |
 |---|---|---|
-| 0.5 天 | 生成、清理示例、目录重排、alias | 目录符合 14.1；`npm run dev` 起空窗口，无残留示例页 |
+| 0.5 天 | 生成、清理示例、目录重排、alias | 目录符合 14.1；`pnpm dev` 起空窗口，无残留示例页 |
 | 0.5 天 | worker 入口、asarUnpack、双目标打包 | **安装后的 exe** 能 fork 出 worker 并往返一条消息 |
 | 1.5 天 | 任务骨架：状态机（含 `paused` / `interrupted`）、worker-host、IPC 路由、日志、假工具 | 假工具跑通 `scan → 落盘明细 → copy → 报告` 两条任务链路，并在中途暂停后「继续」跑完 |
 | 0.5 天 | 联调修补 | 无阻塞缺陷 |
@@ -1335,7 +1340,7 @@ npm create @quick-start/electron@latest shx-tools -- --template react-ts
 
 **M0 的验收标准**
 
-不是"`npm run dev` 能看到界面"，而是：**把 NSIS 安装包装到一台干净机器上，启动、跑完一个假任务、看到报告**。
+不是"`pnpm dev` 能看到界面"，而是：**把 NSIS 安装包装到一台干净机器上，启动、跑完一个假任务、看到报告**。
 
 开发态与打包态在 worker 路径、asar 加载、preload 解析上都有差异，只有打包后才暴露。这一条如果不作为验收标准，M3 会一次性还清所有债。
 

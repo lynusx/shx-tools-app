@@ -1,0 +1,5 @@
+# pnpm 12 配置。settings 从 package.json 的 "pnpm" 字段迁到此处。
+# 只有列出的依赖允许运行安装脚本，其余一律跳过（供应链防护）。
+# Electron 44 起改为首次运行时懒下载二进制，不再需要安装脚本。
+allowBuilds:
+  electron-winstaller: true
