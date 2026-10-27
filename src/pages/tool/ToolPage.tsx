@@ -15,6 +15,7 @@ import {
 import { useParams } from 'react-router-dom'
 import type { CopySummary, ScanSummary, ToolManifest } from '@shared/tool-contract'
 import type { TaskRecord } from '@shared/task'
+import ImageCollectorForm from './ImageCollectorForm'
 import { useTaskStore } from '../../stores/task-store'
 import { isTerminalState, stateColor, stateLabel } from '../../utils/task-status'
 
@@ -42,14 +43,14 @@ export default function ToolPage(): JSX.Element {
   const scanTask = tasks.find((task) => task.id === scanId) ?? null
   const copyTask = copyId ? (tasks.find((task) => task.id === copyId) ?? null) : null
 
-  async function startScan(): Promise<void> {
+  async function startScan(params: Record<string, unknown>): Promise<void> {
     if (!tool) return
     setBusy(true)
     try {
       const task = await window.shx.task.create({
         toolId: tool.id,
         kind: 'scan',
-        params: { dirs, filesPerDir, delayMs }
+        params
       })
       useTaskStore.getState().upsert(task)
       setScanId(task.id)
@@ -85,38 +86,46 @@ export default function ToolPage(): JSX.Element {
         <Typography.Paragraph type="secondary" style={{ marginTop: 0 }}>
           {tool?.description ?? '正在加载工具清单…'}
         </Typography.Paragraph>
-        <Space wrap size={16}>
-          <label>
-            目录数{' '}
-            <InputNumber
-              min={1}
-              max={20000}
-              value={dirs}
-              onChange={(value) => setDirs(value ?? 1)}
-            />
-          </label>
-          <label>
-            每目录文件数{' '}
-            <InputNumber
-              min={0}
-              max={100}
-              value={filesPerDir}
-              onChange={(value) => setFilesPerDir(value ?? 0)}
-            />
-          </label>
-          <label>
-            每目录耗时(ms){' '}
-            <InputNumber
-              min={0}
-              max={1000}
-              value={delayMs}
-              onChange={(value) => setDelayMs(value ?? 0)}
-            />
-          </label>
-          <Button type="primary" loading={busy} onClick={() => void startScan()}>
-            开始扫描
-          </Button>
-        </Space>
+        {tool?.id === 'image-collector' ? (
+          <ImageCollectorForm busy={busy} onStart={(params) => void startScan(params)} />
+        ) : (
+          <Space wrap size={16}>
+            <label>
+              目录数{' '}
+              <InputNumber
+                min={1}
+                max={20000}
+                value={dirs}
+                onChange={(value) => setDirs(value ?? 1)}
+              />
+            </label>
+            <label>
+              每目录文件数{' '}
+              <InputNumber
+                min={0}
+                max={100}
+                value={filesPerDir}
+                onChange={(value) => setFilesPerDir(value ?? 0)}
+              />
+            </label>
+            <label>
+              每目录耗时(ms){' '}
+              <InputNumber
+                min={0}
+                max={1000}
+                value={delayMs}
+                onChange={(value) => setDelayMs(value ?? 0)}
+              />
+            </label>
+            <Button
+              type="primary"
+              loading={busy}
+              onClick={() => void startScan({ dirs, filesPerDir, delayMs })}
+            >
+              开始扫描
+            </Button>
+          </Space>
+        )}
       </Card>
 
       {scanTask ? (
@@ -125,7 +134,7 @@ export default function ToolPage(): JSX.Element {
           task={scanTask}
           event={progressMap[scanTask.id]}
           footer={
-            scanTask.state === 'succeeded' ? (
+            scanTask.state === 'succeeded' && tool?.kinds.includes('copy') ? (
               <Space>
                 <Button type="primary" loading={busy} onClick={() => void startCopy()}>
                   开始复制
