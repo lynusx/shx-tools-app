@@ -31,19 +31,19 @@ body {
 }
 
 /*
- * 侧边栏统一间距规则（4 的倍数）：
- * 行内 2、行间 2、组间 12、侧栏留白 12；字号 14（正文）/ 16（品牌）/ 12（副标题）；
+ * 侧边栏统一间距规则（基数 4：4 / 8 / 12 / 16 / 24）：
+ * 行间 4、图文 8、两侧与行内 12、组间 16；字号 14 / 16 / 12；
  * 圆角 8 与内容区 Card 对齐；图标 13，略小于正文。
  */
 :root {
   --nav-padding-x: 12px;
   --nav-item-padding-x: 12px;
   --nav-item-height: 40px;
-  --nav-item-gap: 2px;
-  --nav-group-gap: 12px;
+  --nav-item-gap: 4px;
+  --nav-group-gap: 16px;
   --nav-radius: 8px;
   --nav-icon-size: 13px;
-  --nav-icon-gap: 10px;
+  --nav-icon-gap: 8px;
   --nav-font-size: 14px;
 }
 
@@ -64,7 +64,7 @@ body {
 
 .app-brand-subtitle {
   display: block;
-  margin-top: 2px;
+  margin-top: 4px;
   font-size: 12px;
   line-height: 20px;
 }
