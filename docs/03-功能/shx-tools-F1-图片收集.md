@@ -637,7 +637,7 @@ EL 的共享通过 Windows「添加一个网络位置」接入（资源管理器
 | npm 现成库（`windows-shortcuts`、`shell-link` 等） | **不用**——这些库大多只解析 `LinkInfo`。实测我们的目标路径在 `EnvironmentVariableDataBlock`，还要做 `conflict` 检测，现成库覆盖不到，反而要 fork 改，得不偿失 |
 | 手写 Buffer 解析 | **采纳**——结构固定（76 字节头 + 若干 ExtraData 块），核心约 200 行，完全可控，且能精确落到我们需要的 EnvVar / PropertyStore 分支 |
 
-**真实样本与参考基准**：本仓库 `力禧特/` 目录下有 8 个真实样本——东区、西区各 `1A` / `1B` / `2A` / `2B`；期望的解析结果在同目录的 `lnk.json`：
+**真实样本与参考基准**：本仓库 `tests/fixtures/lnk/力禧特/` 目录下有 8 个真实样本——东区、西区各 `1A` / `1B` / `2A` / `2B`；期望的解析结果在同目录的 `lnk.json`：
 
 ```json
 {
@@ -1701,7 +1701,7 @@ running：逐文件复制，并发 4~8
 
 ### 7.2 单元测试
 
-- `.lnk` 解析：字节流 → `target`，用 `力禧特/` 的 8 个真实样本固化为 fixture，断言与 `lnk.json` 逐一相符
+- `.lnk` 解析：字节流 → `target`，用 `tests/fixtures/lnk/力禧特/` 的 8 个真实样本固化为 fixture，断言与 `lnk.json` 逐一相符
 - **路径来源分支**：`LinkInfo.NetName`、`LinkInfo.LocalBasePath+Suffix`、`EnvVar.TargetUnicode`、`EnvVar.TargetAnsi`、`PropertyStore` 五级优先级各一组样本，断言依次回退正确
 - **冲突检测**：`EnvVar` 的 Unicode 与 ANSI 主机不同时断言标 `conflict`；`LinkInfo` 与 `EnvVar` 不同时同样标 `conflict`；`EnvVar` 与 `PropertyStore` 不同时断言**不**标 `conflict`、仍取 EnvVar、且 `propertyStoreMismatch` 有值
 - **块顺序无关**：东区 2A / 2B 的 PropertyStore 排在 EnvVar 之前，断言仍取到 EnvVar 的 `\\10.108.8.230` / `\\10.108.8.229`
@@ -1783,7 +1783,7 @@ running：逐文件复制，并发 4~8
 
 ### 7.5 必须准备的样本
 
-1. ~~真实 `.lnk`~~ —— **已收到 8 个**（`力禧特/东区`、`力禧特/西区` 各 `1A`/`1B`/`2A`/`2B`），含 `lnk.json` 期望值，已固化为 fixture，见 2.8
+1. ~~真实 `.lnk`~~ —— **已收到 8 个**（`tests/fixtures/lnk/力禧特/` 下东区、西区各 `1A`/`1B`/`2A`/`2B`），含 `lnk.json` 期望值，已固化为 fixture，见 2.8
 2. ~~**一份真实的时段目录截图**，确认缺陷目录下是否还有子层级~~ —— **已确认（2026-10-25）**：缺陷目录即扫描终点，其下无子层级，扫描不递归
 
 ---

@@ -1063,7 +1063,7 @@ shx-tools/
 │  │  └─ scan.spec.ts               # 模拟目录扫描与六类状态归类
 │  ├─ smoke/
 │  │  └─ app.spec.ts                # Playwright + Electron 冒烟
-│  └─ fixtures/                     # 力禧特/ 样本、测试图片、异常损坏文件
+│  └─ fixtures/                     # 真实样本（lnk/力禧特）、测试图片、异常损坏文件
 ├─ build/
 │  ├─ icon.ico
 │  ├─ icon.icns

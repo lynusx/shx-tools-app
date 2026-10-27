@@ -55,9 +55,9 @@ infra/               与业务无关的基础设施（并发信号量）
 tools/               静态注册表 + fake 工具
 src/                 渲染进程（React 19 + antd 6）
 tests/unit/          纯函数单测
+tests/fixtures/lnk/  F1 .lnk 解析用的真实样本（力禧特 8 个）
 build/               应用图标
 docs/                五份设计文档，按「需求 / 架构 / 功能 / UI / 发布」分层，入口 docs/README.md
-力禧特/              F1 .lnk 解析用的真实样本
 ```
 
 ## 与设计文档的偏差（M0 期间产生，待回写）
