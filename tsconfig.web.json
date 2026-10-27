@@ -5,10 +5,9 @@
     "composite": true,
     "jsx": "react-jsx",
     "noUncheckedIndexedAccess": true,
-    "baseUrl": ".",
     "paths": {
-      "@renderer/*": ["src/*"],
-      "@shared/*": ["shared/*"]
+      "@renderer/*": ["./src/*"],
+      "@shared/*": ["./shared/*"]
     }
   }
 }
